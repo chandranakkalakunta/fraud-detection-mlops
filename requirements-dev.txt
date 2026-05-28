@@ -1,0 +1,41 @@
+# Local development and testing dependencies.
+# requirements.txt (full stack) is used in CI and GCP containers only —
+# it includes KFP, Dataflow, and Vertex AI SDKs that conflict locally.
+
+# ─── Core ML ─────────────────────────────────────────────────────────────────
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.4.2
+xgboost==2.0.3
+lightgbm==4.6.0
+shap==0.45.0
+imbalanced-learn==0.12.3
+
+# ─── GCP SDKs (needed by src modules and tests) ──────────────────────────────
+google-cloud-bigquery==3.25.0
+google-cloud-bigquery-storage==2.25.0
+google-cloud-storage==2.17.0
+google-cloud-aiplatform==1.59.0
+google-cloud-secret-manager==2.20.2
+google-auth==2.29.0
+pyarrow==16.1.0
+db-dtypes==1.2.0
+
+# ─── Logging / Config ────────────────────────────────────────────────────────
+python-json-logger==4.1.0
+pyyaml==6.0.1
+python-dotenv==1.0.1
+
+# ─── Visualization (notebooks) ───────────────────────────────────────────────
+matplotlib==3.9.0
+seaborn==0.13.2
+plotly==5.22.0
+ipykernel==6.29.4
+
+# ─── Testing ─────────────────────────────────────────────────────────────────
+pytest==8.2.2
+pytest-cov==5.0.0
+pytest-mock==3.14.0
+
+# ─── Code Quality ────────────────────────────────────────────────────────────
+ruff==0.4.7

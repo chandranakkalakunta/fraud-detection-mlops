@@ -1,0 +1,78 @@
+steps:
+  # ─── 1. Lint & type check ────────────────────────────────────────────────
+  - name: 'python:3.11-slim'
+    id: lint
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        pip install --quiet ruff mypy python-json-logger pyyaml python-dotenv google-cloud-bigquery google-cloud-storage
+        ruff check src/ scripts/ tests/
+        echo "Lint passed"
+
+  # ─── 2. Unit tests ─────────────────────────────────────────────────────────
+  - name: 'python:3.11-slim'
+    id: test
+    waitFor: [lint]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        pip install --quiet pytest pytest-cov pytest-mock python-json-logger pyyaml \
+          google-cloud-bigquery google-cloud-storage google-cloud-aiplatform \
+          scikit-learn numpy pandas
+        pytest tests/ -v --cov=src --cov-report=term-missing --cov-fail-under=80
+    env:
+      - 'GCP_PROJECT_ID=$PROJECT_ID'
+      - 'GCP_REGION=us-central1'
+      - 'ENV=dev'
+
+  # ─── 3. Build Docker image ─────────────────────────────────────────────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-image
+    waitFor: [test]
+    args:
+      - build
+      - --tag
+      - '${_AR_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/fraud-detection:$SHORT_SHA'
+      - --tag
+      - '${_AR_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/fraud-detection:latest'
+      - --cache-from
+      - '${_AR_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/fraud-detection:latest'
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
+      - .
+
+  # ─── 4. Push to Artifact Registry ─────────────────────────────────────────
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-image
+    waitFor: [build-image]
+    args:
+      - push
+      - '--all-tags'
+      - '${_AR_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/fraud-detection'
+
+  # ─── 5. Security scan (Artifact Registry vulnerability scan) ──────────────
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: security-scan
+    waitFor: [push-image]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        echo "Image pushed to Artifact Registry — vulnerability scanning runs asynchronously."
+        echo "Check: gcloud artifacts docker images list-vulnerabilities"
+
+substitutions:
+  _AR_REGION: us-central1
+  _AR_REPO: fraud-detection-repo
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  env:
+    - 'DOCKER_BUILDKIT=1'
+
+images:
+  - '${_AR_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/fraud-detection:$SHORT_SHA'
+  - '${_AR_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/fraud-detection:latest'

@@ -1,0 +1,61 @@
+# All values resolved from environment variables at runtime.
+# No hardcoded values — see .env.example for required variables.
+# Loaded via src/utils/config.py which calls os.path.expandvars on each string.
+
+gcp:
+  project_id: "${GCP_PROJECT_ID}"
+  region: "${GCP_REGION}"
+  zone: "${GCP_ZONE}"
+
+storage:
+  raw_bucket: "${GCS_RAW_BUCKET}"
+  processed_bucket: "${GCS_PROCESSED_BUCKET}"
+  artifacts_bucket: "${GCS_ARTIFACTS_BUCKET}"
+  audit_bucket: "${GCS_AUDIT_BUCKET}"
+  raw_data_prefix: "ieee-cis/"
+  processed_prefix: "processed/"
+
+bigquery:
+  dataset: "${BQ_DATASET}"
+  location: "${BQ_LOCATION}"
+  kms_key_name: "${BQ_KMS_KEY_NAME}"
+  tables:
+    transactions_raw: "transactions_raw"
+    identity_raw: "identity_raw"
+    transactions_joined: "transactions_joined"
+
+vertex:
+  staging_bucket: "${VERTEX_STAGING_BUCKET}"
+  pipeline_root: "${VERTEX_PIPELINE_ROOT}"
+  experiment_name: "${VERTEX_EXPERIMENT_NAME}"
+  featurestore_id: "${VERTEX_FEATURESTORE_ID}"
+
+service_accounts:
+  training: "${TRAINING_SA}"
+  serving: "${SERVING_SA}"
+  pipeline: "${PIPELINE_SA}"
+  monitoring: "${MONITORING_SA}"
+
+secrets:
+  kaggle: "${KAGGLE_SECRET_NAME}"
+  bq_cmek: "${BQ_CMEK_SECRET_NAME}"
+
+model:
+  max_iter: "${MODEL_MAX_ITER}"
+  random_state: "${MODEL_RANDOM_STATE}"
+  test_size: "${MODEL_TEST_SIZE}"
+  cv_folds: "${MODEL_CV_FOLDS}"
+  primary_metric: "average_precision"
+  evaluation_output: "evaluation/baseline_results.json"
+
+artifact_registry:
+  repository: "${AR_REPOSITORY}"
+  region: "${AR_REGION}"
+
+data_validation:
+  max_null_pct_numeric: 0.95
+  max_null_pct_categorical: 0.95
+  min_rows_transactions: 500000
+  min_rows_identity: 100000
+  expected_fraud_rate_min: 0.03
+  expected_fraud_rate_max: 0.05

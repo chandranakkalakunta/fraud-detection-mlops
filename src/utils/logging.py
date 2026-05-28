@@ -3,7 +3,7 @@
 import logging
 import os
 import sys
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger import json as pythonjson
 
 
 _SEVERITY_MAP = {
@@ -15,7 +15,7 @@ _SEVERITY_MAP = {
 }
 
 
-class _CloudFormatter(jsonlogger.JsonFormatter):
+class _CloudFormatter(pythonjson.JsonFormatter):
     """Remaps standard fields to Cloud Logging structured log format."""
 
     def add_fields(self, log_record: dict, record: logging.LogRecord, message_dict: dict) -> None:

@@ -60,7 +60,9 @@ IDENTITY_SCHEMA = [
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def gcs_uri(bucket: str, prefix: str, filename: str) -> str:
-    return f"gs://{bucket}/{prefix.rstrip('/')}/{filename}"
+    stripped = prefix.rstrip("/")
+    path = f"{stripped}/{filename}" if stripped else filename
+    return f"gs://{bucket}/{path}"
 
 
 def load_csv_to_bq(
@@ -183,7 +185,14 @@ def validate_join_integrity(bq_client: bigquery.Client, config: dict) -> None:
         FROM `{project}.{dataset}.{tables['transactions_joined']}`
     """
     rows = list(bq_client.query(integrity_query).result())
-    stats = dict(rows[0])
+    row = rows[0]
+    stats = {
+        "total_joined": row["total_joined"],
+        "null_txn_ids": row["null_txn_ids"],
+        "null_labels": row["null_labels"],
+        "fraud_rate_pct": row["fraud_rate_pct"],
+        "unique_txn_ids": row["unique_txn_ids"],
+    }
 
     fraud_rate = stats["fraud_rate_pct"]
     val = config["data_validation"]

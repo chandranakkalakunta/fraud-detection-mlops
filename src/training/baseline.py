@@ -28,7 +28,7 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
@@ -61,13 +61,15 @@ TARGET = "isFraud"
 
 # ─── Data loading ─────────────────────────────────────────────────────────────
 
-def load_data_from_bigquery(config: dict) -> tuple[Any, Any]:
-    """Load feature matrix and target from BigQuery joined table."""
+def load_data_from_bigquery(config: dict) -> tuple[Any, Any, Any]:
+    """Load feature matrix, target, and TransactionDT from BigQuery joined table."""
     project = config["gcp"]["project_id"]
     dataset = config["bigquery"]["dataset"]
     table = config["bigquery"]["tables"]["transactions_joined"]
 
-    feature_cols = ", ".join(NUMERIC_FEATURES + CATEGORICAL_FEATURES + [TARGET])
+    feature_cols = ", ".join(
+        ["TransactionDT"] + NUMERIC_FEATURES + CATEGORICAL_FEATURES + [TARGET]
+    )
     query = f"""
         SELECT {feature_cols}
         FROM `{project}.{dataset}.{table}`
@@ -89,7 +91,8 @@ def load_data_from_bigquery(config: dict) -> tuple[Any, Any]:
 
     X = df[NUMERIC_FEATURES + CATEGORICAL_FEATURES]
     y = df[TARGET].astype(int)
-    return X, y
+    dt = df["TransactionDT"]
+    return X, y, dt
 
 
 # ─── Pipeline ────────────────────────────────────────────────────────────────
@@ -159,8 +162,9 @@ def evaluate(
     precision = precision_score(y_test, y_pred)
     recall = recall_score(y_test, y_pred)
 
-    # Cross-validated AUC-PR on training set for variance estimate
-    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+    # Cross-validated AUC-PR — TimeSeriesSplit preserves temporal order within
+    # the training window, consistent with the time-based train/test split.
+    cv = TimeSeriesSplit(n_splits=cv_folds)
     cv_auc_pr = cross_val_score(
         pipeline, X_train, y_train,
         cv=cv, scoring="average_precision", n_jobs=-1,
@@ -181,6 +185,8 @@ def evaluate(
         "cv_auc_pr_std": round(float(cv_auc_pr.std()), 6),
         "cv_folds": cv_folds,
         "classification_report": report,
+        "split_strategy": "time_based",
+        "split_ratio": "75/25 by TransactionDT",
         "train_rows": len(X_train),
         "test_rows": len(X_test),
         "features_numeric": NUMERIC_FEATURES,
@@ -189,7 +195,9 @@ def evaluate(
             "AUC-PR is the primary metric because the dataset has ~3.5% fraud rate. "
             "AUC-PR is insensitive to the large number of true negatives and directly "
             "measures performance on the minority (fraud) class. Every subsequent model "
-            "must exceed this AUC-PR value."
+            "must exceed this AUC-PR value. "
+            "Split is time-based (first 75%% train / last 25%% test by TransactionDT) "
+            "to reflect production conditions — the model is always evaluated on future data."
         ),
     }
 
@@ -209,25 +217,32 @@ def evaluate(
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    from sklearn.model_selection import train_test_split
-
     env = os.getenv("ENV", "dev")
     config = load_config(env)
 
-    random_state = int(config["model"]["random_state"])
-    test_size = float(config["model"]["test_size"])
     cv_folds = int(config["model"]["cv_folds"])
+    random_state = int(config["model"]["random_state"])
 
-    X, y = load_data_from_bigquery(config)
+    X, y, dt = load_data_from_bigquery(config)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=y,
-    )
+    # Time-based split: sort by TransactionDT, train on first 75%, test on last 25%.
+    #
+    # Random splitting leaks future information into training — the model sees
+    # transactions from later time periods during training and is evaluated on
+    # earlier ones, which is the opposite of production. Fraud patterns evolve
+    # over time (new attack vectors, seasonal behaviour, card-testing campaigns),
+    # so a model must be evaluated strictly on data it could not have seen.
+    # Random splits produce optimistically inflated scores that don't generalise.
+    sort_idx = dt.argsort().values
+    X_sorted = X.iloc[sort_idx].reset_index(drop=True)
+    y_sorted = y.iloc[sort_idx].reset_index(drop=True)
+
+    split = int(len(X_sorted) * 0.75)
+    X_train, X_test = X_sorted.iloc[:split], X_sorted.iloc[split:]
+    y_train, y_test = y_sorted.iloc[:split], y_sorted.iloc[split:]
+
     logger.info(
-        "train_test_split",
+        "time_based_split",
         extra={
             "train": len(X_train),
             "test": len(X_test),

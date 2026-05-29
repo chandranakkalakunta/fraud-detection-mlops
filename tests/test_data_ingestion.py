@@ -97,18 +97,17 @@ class TestIdentitySchema:
         assert "DeviceInfo" in names
 
     def test_id_string_fields(self):
+        # All 38 id_ fields are STRING — mix of numeric and categorical values
+        # in the raw data (id_12: "Found"/"NotFound", id_30: OS, etc.)
         str_fields = [
             f for f in IDENTITY_SCHEMA
             if f.name.startswith("id_") and f.field_type == "STRING"
         ]
-        assert len(str_fields) == 11
+        assert len(str_fields) == 38
 
-    def test_id_float_fields(self):
-        float_fields = [
-            f for f in IDENTITY_SCHEMA
-            if f.name.startswith("id_") and f.field_type == "FLOAT"
-        ]
-        assert len(float_fields) == 27
+    def test_id_total_count(self):
+        id_fields = [f for f in IDENTITY_SCHEMA if f.name.startswith("id_")]
+        assert len(id_fields) == 38
 
 
 # ─── GCS URI Tests ────────────────────────────────────────────────────────────

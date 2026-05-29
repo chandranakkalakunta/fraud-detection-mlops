@@ -48,8 +48,7 @@ log "APIs enabled."
 KMS_KEYRING="fraud-keyring"
 KMS_BQ_KEY="bq-key"
 KMS_GCS_KEY="gcs-key"
-KMS_LOCATION="${BQ_LOCATION,,}"   # KMS requires lowercase location
-[[ "${KMS_LOCATION}" == "us" ]] && KMS_LOCATION="us"
+KMS_LOCATION="${GCP_REGION}"   # KMS region matches GCS/Vertex region; BQ_LOCATION must also be regional
 
 log "Creating KMS keyring: ${KMS_KEYRING}..."
 gcloud kms keyrings create "${KMS_KEYRING}" \
@@ -68,27 +67,31 @@ done
 KMS_BQ_KEY_FULL="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_BQ_KEY}"
 KMS_GCS_KEY_FULL="projects/${PROJECT}/locations/${KMS_LOCATION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_GCS_KEY}"
 
-# Grant BigQuery SA access to KMS key for CMEK
-BQ_SA="bq-${PROJECT}@bigquery-encryption.iam.gserviceaccount.com"
+# Grant BigQuery and GCS service accounts access to KMS keys for CMEK
+PROJECT_NUMBER="$(gcloud projects describe "${PROJECT}" --format='value(projectNumber)')"
+BQ_SA="bq-${PROJECT_NUMBER}@bigquery-encryption.iam.gserviceaccount.com"
+GCS_SA="service-${PROJECT_NUMBER}@gs-project-accounts.iam.gserviceaccount.com"
+
+grant_kms() {
+  local key="$1" member="$2"
+  gcloud kms keys add-iam-policy-binding "${key}" \
+    --keyring="${KMS_KEYRING}" \
+    --location="${KMS_LOCATION}" \
+    --member="serviceAccount:${member}" \
+    --role="roles/cloudkms.cryptoKeyEncrypterDecrypter" \
+    --project="${PROJECT}" \
+    --condition=None 2>/dev/null || log "KMS binding for ${member} already exists — skipping."
+}
+
 log "Granting BQ SA KMS access..."
-gcloud kms keys add-iam-policy-binding "${KMS_BQ_KEY}" \
-  --keyring="${KMS_KEYRING}" \
-  --location="${KMS_LOCATION}" \
-  --member="serviceAccount:${BQ_SA}" \
-  --role="roles/cloudkms.cryptoKeyEncrypterDecrypter" \
-  --project="${PROJECT}" \
-  --condition=None 2>/dev/null || log "BQ KMS binding already exists — skipping."
+grant_kms "${KMS_BQ_KEY}" "${BQ_SA}"
+
+log "Granting GCS SA KMS access..."
+grant_kms "${KMS_GCS_KEY}" "${GCS_SA}"
 
 # ─── GCS Buckets ─────────────────────────────────────────────────────────────
-declare -A BUCKETS=(
-  [raw]="${GCS_RAW_BUCKET}"
-  [processed]="${GCS_PROCESSED_BUCKET}"
-  [artifacts]="${GCS_ARTIFACTS_BUCKET}"
-  [audit]="${GCS_AUDIT_BUCKET}"
-)
-
-for label in "${!BUCKETS[@]}"; do
-  bucket="${BUCKETS[$label]}"
+create_bucket() {
+  local bucket="$1" label="$2"
   log "Creating bucket gs://${bucket} (${label})..."
   if ! gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT}" &>/dev/null; then
     gcloud storage buckets create "gs://${bucket}" \
@@ -101,7 +104,12 @@ for label in "${!BUCKETS[@]}"; do
   else
     log "Bucket gs://${bucket} already exists — skipping."
   fi
-done
+}
+
+create_bucket "${GCS_RAW_BUCKET}"       "raw"
+create_bucket "${GCS_PROCESSED_BUCKET}" "processed"
+create_bucket "${GCS_ARTIFACTS_BUCKET}" "artifacts"
+create_bucket "${GCS_AUDIT_BUCKET}"     "audit"
 
 # Audit bucket: 7-year retention for compliance
 log "Setting retention policy on audit bucket..."
@@ -110,27 +118,19 @@ gcloud storage buckets update "gs://${GCS_AUDIT_BUCKET}" \
   --project="${PROJECT}" 2>/dev/null || true
 
 # ─── Service Accounts ─────────────────────────────────────────────────────────
-declare -A SA_NAMES=(
-  [training]="${TRAINING_SA%%@*}"
-  [serving]="${SERVING_SA%%@*}"
-  [pipeline]="${PIPELINE_SA%%@*}"
-  [monitoring]="${MONITORING_SA%%@*}"
-)
-declare -A SA_DESCS=(
-  [training]="Vertex AI training jobs"
-  [serving]="Vertex AI endpoint serving"
-  [pipeline]="Vertex AI Pipelines orchestration"
-  [monitoring]="Model monitoring and alerting"
-)
-
-for role in "${!SA_NAMES[@]}"; do
-  sa_name="${SA_NAMES[$role]}"
-  sa_email="${sa_name}@${PROJECT}.iam.gserviceaccount.com"
+create_sa() {
+  local sa_name="$1" display="$2"
+  local sa_email="${sa_name}@${PROJECT}.iam.gserviceaccount.com"
   log "Creating service account: ${sa_email}..."
   gcloud iam service-accounts create "${sa_name}" \
-    --display-name="${SA_DESCS[$role]}" \
+    --display-name="${display}" \
     --project="${PROJECT}" 2>/dev/null || log "SA ${sa_name} already exists — skipping."
-done
+}
+
+create_sa "${TRAINING_SA%%@*}"   "Vertex AI training jobs"
+create_sa "${SERVING_SA%%@*}"    "Vertex AI endpoint serving"
+create_sa "${PIPELINE_SA%%@*}"   "Vertex AI Pipelines orchestration"
+create_sa "${MONITORING_SA%%@*}" "Model monitoring and alerting"
 
 # ─── IAM Bindings (least-privilege) ──────────────────────────────────────────
 log "Assigning IAM roles (least-privilege)..."
@@ -145,7 +145,7 @@ bind() {
 }
 
 # Training SA: read data, write artifacts, use Vertex AI, use BQ
-TRAIN_EMAIL="${SA_NAMES[training]}@${PROJECT}.iam.gserviceaccount.com"
+TRAIN_EMAIL="${TRAINING_SA}"
 bind "${TRAIN_EMAIL}" "roles/bigquery.dataViewer"
 bind "${TRAIN_EMAIL}" "roles/bigquery.jobUser"
 bind "${TRAIN_EMAIL}" "roles/storage.objectAdmin"
@@ -153,14 +153,14 @@ bind "${TRAIN_EMAIL}" "roles/aiplatform.user"
 bind "${TRAIN_EMAIL}" "roles/cloudkms.cryptoKeyEncrypterDecrypter"
 
 # Serving SA: read model artifacts, write predictions
-SERVE_EMAIL="${SA_NAMES[serving]}@${PROJECT}.iam.gserviceaccount.com"
+SERVE_EMAIL="${SERVING_SA}"
 bind "${SERVE_EMAIL}" "roles/storage.objectViewer"
 bind "${SERVE_EMAIL}" "roles/aiplatform.user"
 bind "${SERVE_EMAIL}" "roles/bigquery.dataEditor"
 bind "${SERVE_EMAIL}" "roles/bigquery.jobUser"
 
 # Pipeline SA: orchestrate Vertex Pipelines, read/write all buckets
-PIPE_EMAIL="${SA_NAMES[pipeline]}@${PROJECT}.iam.gserviceaccount.com"
+PIPE_EMAIL="${PIPELINE_SA}"
 bind "${PIPE_EMAIL}" "roles/aiplatform.user"
 bind "${PIPE_EMAIL}" "roles/storage.objectAdmin"
 bind "${PIPE_EMAIL}" "roles/bigquery.dataEditor"
@@ -168,7 +168,7 @@ bind "${PIPE_EMAIL}" "roles/bigquery.jobUser"
 bind "${PIPE_EMAIL}" "roles/iam.serviceAccountUser"
 
 # Monitoring SA: read metrics, write alerts
-MON_EMAIL="${SA_NAMES[monitoring]}@${PROJECT}.iam.gserviceaccount.com"
+MON_EMAIL="${MONITORING_SA}"
 bind "${MON_EMAIL}" "roles/monitoring.metricWriter"
 bind "${MON_EMAIL}" "roles/monitoring.viewer"
 bind "${MON_EMAIL}" "roles/logging.logWriter"
@@ -213,7 +213,8 @@ create_secret_if_missing() {
   local name="$1"
   if ! gcloud secrets describe "${name}" --project="${PROJECT}" &>/dev/null; then
     gcloud secrets create "${name}" \
-      --replication-policy=automatic \
+      --replication-policy=user-managed \
+      --locations="${GCP_REGION}" \
       --project="${PROJECT}"
     log "Secret ${name} created. Add a version with your actual value."
   else

@@ -46,11 +46,11 @@ TRANSACTION_SCHEMA = [
 IDENTITY_SCHEMA = [
     bigquery.SchemaField("TransactionID", "INTEGER", mode="REQUIRED"),
 ] + [
+    # All id_ fields loaded as STRING — the dataset mixes numeric and categorical
+    # values (e.g. id_12: "Found"/"NotFound", id_30: OS strings, id_35-38: "T"/"F").
+    # Numeric fields are cast to FLOAT in the feature engineering layer.
     bigquery.SchemaField(f"id_{str(i).zfill(2)}", "STRING", mode="NULLABLE")
-    for i in range(1, 12)
-] + [
-    bigquery.SchemaField(f"id_{str(i).zfill(2)}", "FLOAT", mode="NULLABLE")
-    for i in range(12, 39)
+    for i in range(1, 39)
 ] + [
     bigquery.SchemaField("DeviceType", "STRING", mode="NULLABLE"),
     bigquery.SchemaField("DeviceInfo", "STRING", mode="NULLABLE"),

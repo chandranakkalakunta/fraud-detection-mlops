@@ -1,44 +1,46 @@
 {
   "model": "LogisticRegression",
   "primary_metric": "average_precision",
-  "primary_metric_value": 0.223683,
-  "auc_roc": 0.831171,
-  "f1_at_optimal_threshold": 0.301709,
-  "precision_at_optimal_threshold": 0.266186,
-  "recall_at_optimal_threshold": 0.348173,
-  "optimal_threshold": 0.795826,
-  "cv_auc_pr_mean": 0.217785,
-  "cv_auc_pr_std": 0.007132,
+  "primary_metric_value": 0.21715,
+  "auc_roc": 0.821396,
+  "f1_at_optimal_threshold": 0.284119,
+  "precision_at_optimal_threshold": 0.237226,
+  "recall_at_optimal_threshold": 0.354118,
+  "optimal_threshold": 0.784371,
+  "cv_auc_pr_mean": 0.207051,
+  "cv_auc_pr_std": 0.063108,
   "cv_folds": 5,
   "classification_report": {
     "0": {
-      "precision": 0.9760962538375539,
-      "recall": 0.9651941215178768,
-      "f1-score": 0.9706145749237902,
-      "support": 113975.0
+      "precision": 0.976475125337447,
+      "recall": 0.9592591293366541,
+      "f1-score": 0.9677905696903634,
+      "support": 142535.0
     },
     "1": {
-      "precision": 0.2661857195708472,
-      "recall": 0.3481732397774014,
-      "f1-score": 0.30170877450466504,
-      "support": 4133.0
+      "precision": 0.23722579797714435,
+      "recall": 0.35411764705882354,
+      "f1-score": 0.28411861873672617,
+      "support": 5100.0
     },
-    "accuracy": 0.9436024655400143,
+    "accuracy": 0.9383547261828157,
     "macro avg": {
-      "precision": 0.6211409867042006,
-      "recall": 0.656683680647639,
-      "f1-score": 0.6361616747142276,
-      "support": 118108.0
+      "precision": 0.6068504616572956,
+      "recall": 0.6566883881977388,
+      "f1-score": 0.6259545942135447,
+      "support": 147635.0
     },
     "weighted avg": {
-      "precision": 0.9512540734761533,
-      "recall": 0.9436024655400143,
-      "f1-score": 0.9472072894466655,
-      "support": 118108.0
+      "precision": 0.9509380130704538,
+      "recall": 0.9383547261828157,
+      "f1-score": 0.944173358664092,
+      "support": 147635.0
     }
   },
-  "train_rows": 472432,
-  "test_rows": 118108,
+  "split_strategy": "time_based",
+  "split_ratio": "75/25 by TransactionDT",
+  "train_rows": 442905,
+  "test_rows": 147635,
   "features_numeric": [
     "TransactionAmt",
     "card1",
@@ -95,5 +97,5 @@
     "M8",
     "M9"
   ],
-  "note": "AUC-PR is the primary metric because the dataset has ~3.5% fraud rate. AUC-PR is insensitive to the large number of true negatives and directly measures performance on the minority (fraud) class. Every subsequent model must exceed this AUC-PR value."
+  "note": "AUC-PR is the primary metric because the dataset has ~3.5% fraud rate. AUC-PR is insensitive to the large number of true negatives and directly measures performance on the minority (fraud) class. Every subsequent model must exceed this AUC-PR value. Split is time-based (first 75%% train / last 25%% test by TransactionDT) to reflect production conditions \u2014 the model is always evaluated on future data."
 }

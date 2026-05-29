@@ -125,4 +125,22 @@ All bugs, misconfigurations, and schema errors encountered and resolved during P
 **When:** Code review of `src/training/baseline.py`.  
 **Cause:** `train_test_split(..., stratify=y)` shuffles randomly — future transactions appear in training set, past transactions appear in test set. Fraud patterns evolve over time; this produces optimistically inflated scores that don't reflect production performance.  
 **Fix:** Sort by `TransactionDT` ascending; use first 75% for training, last 25% for test. Also switched cross-validation from `StratifiedKFold` to `TimeSeriesSplit` for consistency.  
-**Commit:** pending
+**Commit:** `726b447`
+
+---
+
+## 14. Python module naming — `scripts/02_data_ingestion.py` not importable
+
+**When:** Writing unit tests for ingestion logic.  
+**Cause:** Python module names cannot start with a digit. A file named `02_data_ingestion.py` cannot be imported with `import 02_data_ingestion` — the interpreter rejects names beginning with a numeral. All logic co-located in the script was therefore untestable.  
+**Fix:** Extracted all core logic (schemas, `load_csv_to_bq`, `validate_table`, `create_joined_table`, `validate_join_integrity`, `gcs_uri`) into `src/ingestion/loader.py` as a proper importable module. `scripts/02_data_ingestion.py` became a thin entry point that imports from `src.ingestion.loader`. Tests import `src.ingestion.loader` directly with no workarounds.  
+**Commit:** `1cc37cd`
+
+---
+
+## 15. Python 3.13 incompatibility — pinned packages require Python ≤ 3.12
+
+**When:** First `pip install -r requirements.txt` attempt in the initial (wrong) venv, which used Python 3.13 from the enterprise-hr-rag project.  
+**Cause:** Pinned versions in `requirements.txt` — `numpy==1.26.4`, `scikit-learn==1.4.2`, `pandas==2.2.2` — have no pre-built wheels for Python 3.13 and their C extensions do not compile cleanly against it. The error manifested as build failures and import errors during installation.  
+**Fix:** Installed Python 3.11 via Homebrew (`brew install python@3.11`). Created the project venv explicitly with `/opt/homebrew/opt/python@3.11/bin/python3.11 -m venv venv`. Python 3.11 matches the version pinned in the project's `Dockerfile`, ensuring local and container environments are consistent.  
+**Commit:** `31100ff`

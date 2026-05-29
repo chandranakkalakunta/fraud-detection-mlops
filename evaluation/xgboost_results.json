@@ -1,0 +1,30 @@
+{
+  "champion": "xgb-variant-a-smote",
+  "variant_a": {
+    "auc_pr": 0.149008,
+    "auc_roc": 0.712767,
+    "f1": 0.241609,
+    "f2": 0.198834,
+    "precision": 0.376661,
+    "recall": 0.177843,
+    "ks_statistic": 0.399026,
+    "threshold": 0.581106,
+    "training_rows": 354324,
+    "test_rows": 147635,
+    "imbalance_strategy": "smote"
+  },
+  "variant_b": {
+    "auc_pr": 0.064495,
+    "auc_roc": 0.637662,
+    "f1": 0.160211,
+    "f2": 0.234608,
+    "precision": 0.104814,
+    "recall": 0.339804,
+    "ks_statistic": 0.241628,
+    "threshold": 0.781061,
+    "training_rows": 354324,
+    "test_rows": 147635,
+    "imbalance_strategy": "class_weight"
+  },
+  "champion_gcs_uri": "gs://fraud-detection-mlops-497717-fraud-artifacts/models/xgb-variant-a-smote.joblib"
+}

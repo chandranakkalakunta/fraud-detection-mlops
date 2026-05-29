@@ -21,8 +21,8 @@ from src.features.engineer import FraudFeatureEngineer
 def small_df() -> pd.DataFrame:
     """
     20-row DataFrame with all relevant feature types.
-    V1: 50% nulls (> 5% threshold → indicator created)
-    V2:  0% nulls (≤ 5% threshold → no indicator)
+    V1: 50% nulls (in 5–80% window → indicator created)
+    V2:  0% nulls (below 5% lower bound → no indicator)
     """
     rng = np.random.default_rng(42)
     n = 20
@@ -57,7 +57,7 @@ def small_y(small_df: pd.DataFrame) -> pd.Series:
 @pytest.fixture
 def engineer() -> FraudFeatureEngineer:
     return FraudFeatureEngineer(
-        missing_threshold=0.05,
+        missing_threshold=0.80,
         d_norm_cols=["D1", "D4", "D10"],
         d_group_col="card1",
         target_encode_cols=["card4", "card6", "P_emaildomain", "R_emaildomain"],
@@ -124,7 +124,7 @@ class TestNoLeakage:
         y = pd.Series([1, 1, 0, 0])
 
         eng = FraudFeatureEngineer(
-            missing_threshold=0.05,
+            missing_threshold=0.80,
             d_norm_cols=["D1", "D4", "D10"],
             d_group_col="card1",
             target_encode_cols=["card4", "card6", "P_emaildomain", "R_emaildomain"],
@@ -153,30 +153,20 @@ class TestNoLeakage:
         np.testing.assert_allclose(result["card4_te"].values, expected, rtol=1e-6)
 
 
-# ─── Missing indicator tests ──────────────────────────────────────────────────
+# ─── V-column imputation tests ────────────────────────────────────────────────
+# _was_missing indicators were removed in v4 (see engineer.py module comment).
+# Run A (no indicators, AUC-PR=0.4853) beat Run C (253 indicators, AUC-PR=0.1228)
+# by 0.28 AUC-PR. All V-columns are now imputed with training medians only.
 
 class TestMissingIndicators:
-    def test_indicator_created_for_high_null_column(
+    def test_no_indicator_columns_created(
         self, small_df: pd.DataFrame, small_y: pd.Series, engineer: FraudFeatureEngineer
     ):
         result = engineer.fit_transform(small_df, small_y)
-        # V1 has 50% nulls → above 5% threshold
-        assert "V1_was_missing" in result.columns
-
-    def test_no_indicator_for_low_null_column(
-        self, small_df: pd.DataFrame, small_y: pd.Series, engineer: FraudFeatureEngineer
-    ):
-        result = engineer.fit_transform(small_df, small_y)
-        # V2 has 0% nulls → below 5% threshold
-        assert "V2_was_missing" not in result.columns
-
-    def test_indicator_values_match_original_nulls(
-        self, small_df: pd.DataFrame, small_y: pd.Series, engineer: FraudFeatureEngineer
-    ):
-        was_null = small_df["V1"].isnull().astype(int).values
-        result = engineer.fit_transform(small_df, small_y)
-
-        np.testing.assert_array_equal(result["V1_was_missing"].values, was_null)
+        was_missing_cols = [c for c in result.columns if c.endswith("_was_missing")]
+        assert len(was_missing_cols) == 0, (
+            f"Expected no indicator columns, got: {was_missing_cols}"
+        )
 
     def test_v_columns_fully_imputed_after_transform(
         self, small_df: pd.DataFrame, small_y: pd.Series, engineer: FraudFeatureEngineer
@@ -217,7 +207,7 @@ class TestMissingIndicators:
         })
 
         eng = FraudFeatureEngineer(
-            missing_threshold=0.05,
+            missing_threshold=0.80,
             d_norm_cols=["D1", "D4", "D10"],
             d_group_col="card1",
             target_encode_cols=["card4", "card6", "P_emaildomain", "R_emaildomain"],
@@ -275,20 +265,21 @@ class TestOutputFeatureCount:
       +3  time features  (time_of_day, day_of_week, hour_of_day)
       +3  velocity       (log_transaction_amt, amt_to_d1_ratio, is_round_amt)
       +3  D-norm         (D1_card_norm, D4_card_norm, D10_card_norm)
-      +1  V1_was_missing (V1 has 50% nulls → above threshold)
 
     No net change:
        4 raw cat cols dropped, 4 _te cols added → net 0
 
-    Expected total: 12 + 3 + 3 + 3 + 1 = 22
+    No _was_missing indicator columns — removed in v4 (see engineer.py comment).
+
+    Expected total: 12 + 3 + 3 + 3 = 21
     """
 
     def test_total_output_columns(
         self, small_df: pd.DataFrame, small_y: pd.Series, engineer: FraudFeatureEngineer
     ):
         result = engineer.fit_transform(small_df, small_y)
-        assert result.shape[1] == 22, (
-            f"Expected 22 columns, got {result.shape[1]}: {sorted(result.columns)}"
+        assert result.shape[1] == 21, (
+            f"Expected 21 columns, got {result.shape[1]}: {sorted(result.columns)}"
         )
 
     def test_time_features_present(
@@ -335,3 +326,172 @@ class TestOutputFeatureCount:
     def test_transform_not_fitted_raises(self, engineer: FraudFeatureEngineer):
         with pytest.raises(RuntimeError, match="fit()"):
             engineer.transform(pd.DataFrame({"x": [1, 2]}))
+
+
+# ─── Pass-through imputation tests ───────────────────────────────────────────
+
+class TestPassThroughImputation:
+    """
+    Verify median imputation for non-V numeric pass-through columns
+    (C1–C14, D2–D9, D11–D15, addr1, addr2, dist1, dist2).
+    """
+
+    def _make_passthrough_df(self, n: int = 20) -> pd.DataFrame:
+        rng = np.random.default_rng(7)
+        df = pd.DataFrame({
+            "TransactionDT": rng.integers(86400, 86400 * 500, n),
+            "TransactionAmt": rng.uniform(1.0, 1000.0, n),
+            "card1": rng.choice([100, 200, 300], n),
+            "card4": rng.choice(["visa", "mc"], n),
+            "card6": rng.choice(["debit", "credit"], n),
+            "P_emaildomain": rng.choice(["gmail.com", "yahoo.com"], n),
+            "R_emaildomain": rng.choice(["gmail.com", "yahoo.com"], n),
+            "D1": rng.uniform(0.0, 100.0, n),
+            "D4": rng.uniform(0.0, 100.0, n),
+            "D10": rng.uniform(0.0, 100.0, n),
+            "C1": rng.uniform(0.0, 10.0, n),
+            "C2": rng.uniform(0.0, 10.0, n),
+            "D3": rng.uniform(0.0, 50.0, n),
+            "D12": rng.uniform(0.0, 50.0, n),
+            "addr1": rng.uniform(100.0, 500.0, n),
+            "dist1": rng.uniform(0.0, 200.0, n),
+        })
+        # Inject NaN into pass-through columns
+        df.loc[[0, 5, 10, 15], "C1"] = np.nan
+        df.loc[[1, 6, 11], "C2"] = np.nan
+        df.loc[[2, 7, 12], "D3"] = np.nan
+        df.loc[[3, 8, 13], "D12"] = np.nan
+        df.loc[[4, 9, 14], "addr1"] = np.nan
+        df.loc[[0, 10], "dist1"] = np.nan
+        return df
+
+    def test_medians_fit_from_train_only(self):
+        """Stored medians must equal median of training slice — not influenced by test."""
+        df = self._make_passthrough_df(30)
+        y = pd.Series(np.zeros(30, dtype=int))
+        train_X = df.iloc[:20].reset_index(drop=True)
+        train_y = y.iloc[:20].reset_index(drop=True)
+
+        eng = FraudFeatureEngineer(
+            missing_threshold=0.80,
+            d_norm_cols=["D1", "D4", "D10"],
+            d_group_col="card1",
+            target_encode_cols=["card4", "card6", "P_emaildomain", "R_emaildomain"],
+        )
+        eng.fit(train_X, train_y)
+
+        # Median must match training slice only, ignoring the held-out test rows
+        expected_c1 = train_X["C1"].median()
+        assert eng._passthrough_medians["C1"] == pytest.approx(expected_c1)
+
+        expected_addr1 = train_X["addr1"].median()
+        assert eng._passthrough_medians["addr1"] == pytest.approx(expected_addr1)
+
+    def test_zero_nan_in_passthrough_cols_after_transform(self):
+        """After fit_transform, no pass-through column may contain NaN."""
+        df = self._make_passthrough_df(20)
+        y = pd.Series(np.zeros(20, dtype=int))
+
+        eng = FraudFeatureEngineer(
+            missing_threshold=0.80,
+            d_norm_cols=["D1", "D4", "D10"],
+            d_group_col="card1",
+            target_encode_cols=["card4", "card6", "P_emaildomain", "R_emaildomain"],
+        )
+        result = eng.fit_transform(df, y)
+
+        passthrough_output_cols = [c for c in ["C1", "C2", "D3", "D12", "addr1", "dist1"]
+                                   if c in result.columns]
+        for col in passthrough_output_cols:
+            assert result[col].isnull().sum() == 0, f"{col} still has NaN after transform"
+
+    def test_zero_nan_in_passthrough_cols_on_test_set(self):
+        """Test set pass-through NaN imputed using training medians only."""
+        df = self._make_passthrough_df(30)
+        y = pd.Series(np.zeros(30, dtype=int))
+        train_X = df.iloc[:20].reset_index(drop=True)
+        train_y = y.iloc[:20].reset_index(drop=True)
+        test_X = df.iloc[20:].reset_index(drop=True)
+
+        eng = FraudFeatureEngineer(
+            missing_threshold=0.80,
+            d_norm_cols=["D1", "D4", "D10"],
+            d_group_col="card1",
+            target_encode_cols=["card4", "card6", "P_emaildomain", "R_emaildomain"],
+        )
+        eng.fit(train_X, train_y)
+        result = eng.transform(test_X)
+
+        for col in ["C1", "C2", "addr1"]:
+            if col in result.columns:
+                assert result[col].isnull().sum() == 0, f"{col} has NaN in test transform"
+
+    def test_imputed_values_equal_training_median(self):
+        """NaN values must be replaced with the training-set median, not test-set median."""
+        rng = np.random.default_rng(99)
+        n = 10
+
+        def make_row(c1_val):
+            return {
+                "TransactionDT": int(rng.integers(86400, 86400 * 10)),
+                "TransactionAmt": float(rng.uniform(1, 100)),
+                "card1": 1,
+                "card4": "visa",
+                "card6": "debit",
+                "P_emaildomain": "gmail.com",
+                "R_emaildomain": "yahoo.com",
+                "D1": 10.0, "D4": 5.0, "D10": 3.0,
+                "C1": c1_val,
+            }
+
+        # Training: C1 values [1, 2, 3, 4, 5] → median = 3.0
+        train_rows = [make_row(float(v)) for v in [1, 2, 3, 4, 5]]
+        train_X = pd.DataFrame(train_rows)
+        train_y = pd.Series([0, 0, 1, 0, 0])
+
+        # Test: C1 is NaN → must be replaced with 3.0 (train median)
+        test_X = pd.DataFrame([make_row(np.nan)])
+
+        eng = FraudFeatureEngineer(
+            missing_threshold=0.80,
+            d_norm_cols=["D1", "D4", "D10"],
+            d_group_col="card1",
+            target_encode_cols=["card4", "card6", "P_emaildomain", "R_emaildomain"],
+        )
+        eng.fit(train_X, train_y)
+        result = eng.transform(test_X)
+
+        assert result["C1"].iloc[0] == pytest.approx(3.0)
+
+    def test_d_norm_raw_cols_have_zero_nan(self):
+        """D-norm columns (D1, D4, D10) are imputed with global training median in raw output."""
+        rng = np.random.default_rng(55)
+        n = 20
+        df = pd.DataFrame({
+            "TransactionDT": rng.integers(86400, 86400 * 500, n),
+            "TransactionAmt": rng.uniform(1.0, 500.0, n),
+            "card1": rng.choice([1, 2], n),
+            "card4": rng.choice(["visa", "mc"], n),
+            "card6": rng.choice(["debit", "credit"], n),
+            "P_emaildomain": ["gmail.com"] * n,
+            "R_emaildomain": ["yahoo.com"] * n,
+            "D1": rng.uniform(0.0, 100.0, n),
+            "D4": rng.uniform(0.0, 100.0, n),
+            "D10": rng.uniform(0.0, 100.0, n),
+        })
+        # Inject NaN into D1, D4, D10
+        df.loc[[0, 5, 10], "D1"] = np.nan
+        df.loc[[1, 6], "D4"] = np.nan
+        df.loc[[2, 7, 12], "D10"] = np.nan
+        y = pd.Series(rng.choice([0, 1], n, p=[0.9, 0.1]))
+
+        eng = FraudFeatureEngineer(
+            missing_threshold=0.80,
+            d_norm_cols=["D1", "D4", "D10"],
+            d_group_col="card1",
+            target_encode_cols=["card4", "card6", "P_emaildomain", "R_emaildomain"],
+        )
+        result = eng.fit_transform(df, y)
+
+        for col in ["D1", "D4", "D10"]:
+            assert result[col].isnull().sum() == 0, f"{col} raw column still has NaN"

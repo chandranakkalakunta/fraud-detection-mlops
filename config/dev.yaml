@@ -29,6 +29,10 @@ vertex:
   pipeline_root: "${VERTEX_PIPELINE_ROOT}"
   experiment_name: "${VERTEX_EXPERIMENT_NAME}"
   featurestore_id: "${VERTEX_FEATURESTORE_ID}"
+  model_display_name: "${VERTEX_MODEL_DISPLAY_NAME}"
+  serving_container:
+    xgboost: "us-docker.pkg.dev/vertex-ai/prediction/xgboost-cpu.1-7:latest"
+    lightgbm: "us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-4:latest"
 
 service_accounts:
   training: "${TRAINING_SA}"
@@ -60,8 +64,14 @@ model:
   random_state: "${MODEL_RANDOM_STATE}"
   test_size: "${MODEL_TEST_SIZE}"
   cv_folds: "${MODEL_CV_FOLDS}"
+  val_split: "${MODEL_VAL_SPLIT}"
   primary_metric: "average_precision"
   evaluation_output: "evaluation/baseline_results.json"
+
+  smote:
+    sampling_strategy: "${SMOTE_SAMPLING_STRATEGY}"
+    k_neighbors: 5
+    random_state: "${MODEL_RANDOM_STATE}"
 
   xgboost:
     n_estimators: "${XGB_N_ESTIMATORS}"
@@ -71,6 +81,9 @@ model:
     subsample: 0.8
     colsample_bytree: 0.8
     min_child_weight: 5
+    early_stopping_rounds: "${XGB_EARLY_STOPPING_ROUNDS}"
+    tree_method: "hist"
+    eval_metric: "auc"
     evaluation_output: "evaluation/xgboost_results.json"
 
   lightgbm:
@@ -81,6 +94,8 @@ model:
     feature_fraction: 0.8
     bagging_fraction: 0.8
     bagging_freq: 5
+    early_stopping_rounds: "${LGB_EARLY_STOPPING_ROUNDS}"
+    metric: "auc"
     evaluation_output: "evaluation/lightgbm_results.json"
 
 explainability:

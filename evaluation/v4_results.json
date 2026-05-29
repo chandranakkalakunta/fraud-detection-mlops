@@ -1,0 +1,34 @@
+{
+  "xgb_v4": {
+    "auc_pr": 0.174262,
+    "auc_roc": 0.713974,
+    "f1": 0.252415,
+    "f2": 0.246887,
+    "precision": 0.262202,
+    "recall": 0.243333,
+    "ks_statistic": 0.386622,
+    "threshold": 0.772829,
+    "training_rows": 354324,
+    "test_rows": 147635,
+    "imbalance_strategy": "scale_pos_weight",
+    "best_iteration": 15,
+    "n_features": 392,
+    "gcs_uri": "gs://fraud-detection-mlops-497717-fraud-artifacts/models/xgb-v4-no-indicators/"
+  },
+  "lgb_v4": {
+    "auc_pr": 0.067785,
+    "auc_roc": 0.7191,
+    "f1": 0.139831,
+    "f2": 0.268824,
+    "precision": 0.077695,
+    "recall": 0.698235,
+    "ks_statistic": 0.427152,
+    "threshold": 0.003709,
+    "training_rows": 354324,
+    "test_rows": 147635,
+    "imbalance_strategy": "lgb_is_unbalance",
+    "best_iteration": 47,
+    "n_features": 392,
+    "gcs_uri": "gs://fraud-detection-mlops-497717-fraud-artifacts/models/lgb-v4-no-indicators/"
+  }
+}

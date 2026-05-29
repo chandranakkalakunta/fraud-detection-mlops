@@ -40,6 +40,21 @@ secrets:
   kaggle: "${KAGGLE_SECRET_NAME}"
   bq_cmek: "${BQ_CMEK_SECRET_NAME}"
 
+features:
+  missing_indicator_threshold: "${FEATURE_MISSING_THRESHOLD}"
+  target_encode_cols:
+    - "card4"
+    - "card6"
+    - "P_emaildomain"
+    - "R_emaildomain"
+  d_normalize_group_col: "card1"
+  d_normalize_cols:
+    - "D1"
+    - "D4"
+    - "D10"
+  transformer_gcs_prefix: "transformers/"
+  engineered_bq_table: "transactions_engineered"
+
 model:
   max_iter: "${MODEL_MAX_ITER}"
   random_state: "${MODEL_RANDOM_STATE}"
@@ -47,6 +62,30 @@ model:
   cv_folds: "${MODEL_CV_FOLDS}"
   primary_metric: "average_precision"
   evaluation_output: "evaluation/baseline_results.json"
+
+  xgboost:
+    n_estimators: "${XGB_N_ESTIMATORS}"
+    max_depth: "${XGB_MAX_DEPTH}"
+    learning_rate: "${XGB_LEARNING_RATE}"
+    scale_pos_weight: "${XGB_SCALE_POS_WEIGHT}"
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 5
+    evaluation_output: "evaluation/xgboost_results.json"
+
+  lightgbm:
+    num_leaves: "${LGB_NUM_LEAVES}"
+    learning_rate: "${LGB_LEARNING_RATE}"
+    n_estimators: "${LGB_N_ESTIMATORS}"
+    min_child_samples: 20
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 5
+    evaluation_output: "evaluation/lightgbm_results.json"
+
+explainability:
+  top_n_features: "${SHAP_TOP_N_FEATURES}"
+  output_gcs_prefix: "explainability/"
 
 artifact_registry:
   repository: "${AR_REPOSITORY}"

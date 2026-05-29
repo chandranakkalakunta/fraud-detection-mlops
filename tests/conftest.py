@@ -37,6 +37,7 @@ def set_required_env_vars(monkeypatch):
         "AR_REGION": "us-central1",
         "ALERT_EMAIL": "test@example.com",
         "ENV": "dev",
+        "FEATURE_MISSING_THRESHOLD": "0.05",
     }
     for key, value in defaults.items():
         if not os.getenv(key):

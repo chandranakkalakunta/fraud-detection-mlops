@@ -1,6 +1,6 @@
 # Issues Log — fraud-detection-mlops
 
-All bugs, misconfigurations, and schema errors encountered and resolved during Phase 1 setup.
+All bugs, misconfigurations, and schema errors encountered and resolved during development.
 
 ---
 
@@ -144,3 +144,88 @@ All bugs, misconfigurations, and schema errors encountered and resolved during P
 **Cause:** Pinned versions in `requirements.txt` — `numpy==1.26.4`, `scikit-learn==1.4.2`, `pandas==2.2.2` — have no pre-built wheels for Python 3.13 and their C extensions do not compile cleanly against it. The error manifested as build failures and import errors during installation.  
 **Fix:** Installed Python 3.11 via Homebrew (`brew install python@3.11`). Created the project venv explicitly with `/opt/homebrew/opt/python@3.11/bin/python3.11 -m venv venv`. Python 3.11 matches the version pinned in the project's `Dockerfile`, ensuring local and container environments are consistent.  
 **Commit:** `31100ff`
+
+---
+
+## Phase 2A — Feature Engineering & Diagnostic Runs
+
+---
+
+## 16. LOO target encoding collapse — `best_iter=15`, `card4_te` SHAP=0.934
+
+**When:** Phase 2A ablation run xgb-v4-no-indicators.  
+**Cause:** Leave-one-out target encoding for `card4`, `card6`, `P_emaildomain`, `R_emaildomain` created near-perfect fraud-rate proxies. `card4_te` had SHAP=0.934 — the model saturated on this single feature within 15 trees and immediately overfit. `best_iter=15` at `n_estimators=500` meant 97% of training capacity was wasted.  
+**Fix:** Removed all target-encoded columns (`target_encode_cols=[]`). AUC-PR recovered from 0.174 (v4, TE present) to 0.4895 (v5, TE removed). Declared permanently dropped in `FraudFeatureEngineer`.  
+**Commit:** `b56fa89`
+
+---
+
+## 17. V-column `_was_missing` indicators crowding `colsample_bytree` budget
+
+**When:** Phase 2A ablation Run C (full engineer with 253 indicators).  
+**Cause:** 253 binary `_was_missing` indicators were created for V-columns with >5% null rate. Of these, 206 had 80–100% null rate — meaning the indicator was 1 for nearly every row, making it near-constant and informationally worthless. These 253 features occupied ~49% of the `colsample_bytree=0.8` budget per tree, crowding out genuinely predictive features. AUC-PR collapsed from 0.4871 (Run B, no indicators) to 0.1228 (Run C, 253 indicators) — a delta of −0.364.  
+**Fix:** Removed all V-column indicators permanently. V-columns are now median-imputed only. The threshold-based partial fix (threshold 0.05→0.80, v3) still left 206 near-constant indicators and only recovered to AUC-PR=0.201 — insufficient. Full removal in v5 restored AUC-PR to 0.4913.  
+**Commit:** `b56fa89`
+
+---
+
+## 18. `eval_metric='logloss'` incompatible with `scale_pos_weight`
+
+**When:** Phase 2A/2B XGBoost runs v2 and v4.  
+**Cause:** `scale_pos_weight=27` upweights the fraud class during training, pushing predicted probabilities toward high values for most rows. Unweighted validation logloss treats these inflated probabilities as errors on the 96.5% legitimate class, spiking immediately at tree 1. Early stopping fires at `best_iter=0`, yielding AUC-ROC=0.4984 (random).  
+**Fix:** Changed `eval_metric='auc'` throughout. AUC is a ranking metric — threshold-free and immune to calibration bias from class weighting. AUC-PR is still computed from `predict_proba()` post-training as the primary reporting metric.  
+**Commit:** `b56fa89`
+
+---
+
+## Phase 2B — Hyperparameter Tuning (Vertex AI Vizier)
+
+---
+
+## 19. Vizier API rejects study `display_name` containing hyphens
+
+**When:** First `run_tuning("xgboost")` call to Vertex AI Vizier.  
+**Cause:** Vizier study display names must match `[a-z0-9_]+` — hyphens are rejected with `400 InvalidArgument`. Initial study names used hyphens: `fraud-xgb-hp-tuning`.  
+**Fix:** Changed to underscores throughout: `fraud_xgb_hp_tuning`, `fraud_lgb_hp_tuning`. Updated `.env` and `.env.example`.  
+**Commit:** `b56fa89`
+
+---
+
+## 20. `AttributeError: 'float' object has no attribute 'number_value'` — Vizier trial parameters
+
+**When:** First trial parameter extraction in `VizierHPTuner._extract_params()`.  
+**Cause:** Google Cloud documentation and older SDK examples show `trial.parameters[i].value.number_value` for accessing numeric trial values. In `google-cloud-aiplatform==1.59.0`, `Trial.Parameter.value` is already a Python `float` — not a protobuf `Value` wrapper. Calling `.number_value` on a float raises `AttributeError`.  
+**Fix:** Changed to `float(p.value)` directly. Integer parameters round-tripped through `int(round(value))`.  
+**Commit:** `b56fa89`
+
+---
+
+## 21. `AttributeError: GAUSSIAN_PROCESS_BANDIT` — missing enum in aiplatform v1.59.0
+
+**When:** `VizierHPTuner._get_or_create_study()` — setting Vizier algorithm.  
+**Cause:** `StudySpec.Algorithm.GAUSSIAN_PROCESS_BANDIT` does not exist in `google-cloud-aiplatform==1.59.0`. The enum variant was added in a later SDK version.  
+**Fix:** Changed to `StudySpec.Algorithm.ALGORITHM_UNSPECIFIED`. The Vizier backend defaults to Gaussian Process Bandit when the algorithm is unspecified — confirmed in GCP documentation.  
+**Commit:** `b56fa89`
+
+---
+
+## 22. Stale `ACTIVE`/`REQUESTED` Vizier trials blocking `suggest_trials`
+
+**When:** Resuming a Vizier study after an interrupted tuning run.  
+**Cause:** Vizier enforces a cap on concurrent active trials. Trials left in `ACTIVE` or `REQUESTED` state from a previous (interrupted) run count against this cap. `suggest_trials` either returns 0 trials or hangs waiting for capacity to free.  
+**Fix:** Added `_cleanup_pending_trials()` method to `VizierHPTuner`. On study reuse, it iterates all trials and marks any `ACTIVE`/`REQUESTED` ones as infeasible before requesting new suggestions. Called automatically in `_get_or_create_study()` when an existing study is found.  
+**Commit:** `b56fa89`
+
+---
+
+## Phase 2B — Champion Pipeline & Leakage Fix
+
+---
+
+## 23. `TransactionID` data leakage via temporal ordering correlation
+
+**When:** SHAP analysis on champion model `lgb-v7-tuned`.  
+**Cause:** `TransactionID` is a monotonically increasing unique row identifier — lower IDs correspond to earlier transactions, which fall in the training period under the time-based split. The model learned to partially associate low IDs with the training distribution, placing `TransactionID` at SHAP rank 7 (mean |SHAP|=0.241) despite it carrying zero genuine fraud signal.  
+**Diagnosis:** SHAP `TreeExplainer` on full 147k test set. TransactionID ranked above `card2`, `V91`, and `C1` — all legitimate features. Its rank 7 position was suspicious for a row identifier.  
+**Fix:** Added `EXCLUDED_FEATURES = ["TransactionID"]` at module level in `src/features/engineer.py`. The `transform()` method drops all columns in `EXCLUDED_FEATURES` at the top of processing, before any imputation or feature creation, so the leakage cannot re-enter via any code path. Retrained as `lgb-v8-no-txnid` (387 features). AUC-PR: 0.5393 → 0.5263 (delta −0.013). Since |delta| < 0.02, TransactionID was marginal — the model's core signal is clean. `lgb-v7-tuned` demoted to staging; `lgb-v8-no-txnid` registered as production-ready.  
+**Commit:** `64d277c`

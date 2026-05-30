@@ -168,9 +168,7 @@ Secondary metrics reported: AUC-ROC, F1, Precision, Recall at optimal threshold.
 - [x] **Phase 1** — Scaffold, GCP setup, data ingestion, EDA, baseline model
 - [x] **Phase 2A** — Feature engineering (387 features after TransactionID leakage fix), XGBoost/LightGBM, Vertex AI Experiments
 - [x] **Phase 2B** — HP tuning (Vertex AI Vizier, 30+30 trials), champion selection, SHAP, Platt calibration, TransactionID leakage fix (v8)
-- [ ] **Phase 3** — Vertex AI Pipelines (KFP), Experiments tracking
-- [ ] **Phase 4** — Online serving, Vertex AI Endpoint, drift monitoring
-- [ ] **Phase 5** — A/B testing framework, Streamlit dashboard, SHAP explainability
+- [x] **Phase 4** — Online serving (Vertex AI Endpoint + Cloud Run), drift monitoring (PSI + fraud rate), CI/CD (Cloud Build), Streamlit demo
 
 ---
 
@@ -383,5 +381,196 @@ AUC metrics are threshold-agnostic and hold flat post-calibration; the threshold
 - SHAP bar chart: `gs://fraud-detection-mlops-497717-fraud-artifacts/explainability/shap_feature_importance_top20.png`
 - SHAP beeswarm: `gs://fraud-detection-mlops-497717-fraud-artifacts/explainability/shap_beeswarm.png`
 - Reliability diagram: `gs://fraud-detection-mlops-497717-fraud-artifacts/explainability/reliability_diagram.png`
+
+---
+
+## Serving Architecture (Phase 4)
+
+```
+Transaction JSON
+      │
+      ▼
+Cloud Run API (src/serving/api.py)
+  • POST /predict   — feature engineer → Vertex AI Endpoint → fraud probability
+  • GET  /health    — model version, endpoint status, today's prediction count
+  • GET  /metrics   — 24hr latency p50/p95/p99, fraud rate
+  • POST /drift-check — triggered by Cloud Scheduler
+      │
+      ├── FraudFeatureEngineer.transform()  (transformer loaded from GCS, cached)
+      │
+      ├── Vertex AI Endpoint (lgb-v8-no-txnid, autoscaling 1–3 replicas)
+      │     machine_type: n1-standard-4
+      │     target latency: p99 < 200ms
+      │
+      ├── Platt calibration threshold: 0.2458
+      │
+      ├── Per-prediction SHAP (top 3 features, TreeExplainer on base LGB)
+      │
+      └── BigQuery prediction_logs (metadata only — no PII, no feature values)
+            prediction_id, timestamp, fraud_probability, prediction,
+            threshold_used, latency_ms, model_version
+```
+
+**Cloud Run API** deployed with `serving-sa`, `min_instances=1`, `max_instances=5`, `memory=2Gi`.  
+**Streamlit demo** deployed as a separate Cloud Run service with public access.
+
+---
+
+## Drift Monitoring (Phase 4)
+
+Two independent drift detection methods run daily:
+
+### Feature Drift — PSI
+Population Stability Index computed for **TransactionAmt** and **C13** (the two highest-SHAP features that are also business-interpretable).
+
+- **Baseline**: training distribution percentiles saved in GCS (`monitoring/baseline_distributions.json`)
+- **Current window**: last 7 days of transactions from `fraud_detection.transactions_joined`
+- **Alert threshold**: PSI > 0.2 for either feature
+- **PSI interpretation**: < 0.1 stable, 0.1–0.2 investigate, > 0.2 significant shift
+
+### Performance Drift — Fraud Rate
+- Monitoring 7-day rolling fraud rate in `prediction_logs`
+- Alert when `|observed_rate − 0.0351| > 2 × binomial_std`
+- Binomial std = `√(p(1-p)/n)` — shrinks as prediction volume grows
+
+### BigQuery `drift_logs` schema
+| Column | Type | Description |
+|---|---|---|
+| timestamp | TIMESTAMP | Check time |
+| feature_name | STRING | Feature name or "fraud_rate" |
+| psi_score | FLOAT64 | PSI or deviation in std units |
+| alert_fired | BOOL | True if threshold exceeded |
+| baseline_mean | FLOAT64 | Training distribution mean |
+| current_mean | FLOAT64 | Current window mean |
+| window_days | INTEGER | Monitoring window size |
+
+### Alert wiring
+| Alert Policy | Metric | Threshold | Channel |
+|---|---|---|---|
+| `feature-drift-alert` | `custom/fraud_detection/psi_score` | PSI > 0.2 | Email |
+| `performance-drift-alert` | `custom/fraud_detection/fraud_rate_deviation_std` | > 2.0 std | Email |
+
+Cloud Scheduler job: `fraud-daily-drift-check` — cron `30 0 * * *` UTC (= 6:00 AM IST).
+
+Also configured: **Vertex AI Model Monitoring** on the deployed endpoint — skew detection for TransactionAmt and C13 vs training dataset, email alert on threshold breach.
+
+---
+
+## CI/CD Pipeline (Phase 4)
+
+Cloud Build triggered on every push to `main`. 10-step pipeline:
+
+| Step | Name | Blocks on failure |
+|---|---|---|
+| 1 | Unit tests (`pytest --cov-fail-under=70`) | Yes |
+| 2 | Model performance gate (`AUC-PR ≥ 0.48`) | Yes |
+| 3 | Feature engineering validation (387 features, 0 NaN on 500-row sample) | Yes |
+| 4 | CVE audit (`pip-audit`) | No (warns) |
+| 5 | SAST (`bandit -ll`) — blocks on HIGH severity | Yes |
+| 6 | Secret scan (`detect-secrets`) | No (warns) |
+| 7 | Docker build (multi-stage, non-root, `BUILDKIT_INLINE_CACHE`) | Yes |
+| 8 | Push to Artifact Registry + container vulnerability scan (blocks on CRITICAL CVEs) | Yes |
+| 9 | Rolling deploy to Cloud Run (`fraud-detection-api`) | Yes |
+| 10 | Smoke test — POST `/predict` + GET `/health` | Yes |
+
+Service account: `cicd-sa` (Cloud Build).  
+Configure GitHub trigger:
+```bash
+gcloud builds triggers create github \
+  --repo-name=fraud-detection-mlops \
+  --repo-owner=chandranakkalakunta \
+  --branch-pattern='^main$' \
+  --build-config=cloudbuild.yaml \
+  --service-account=projects/PROJECT_ID/serviceAccounts/cicd-sa@PROJECT_ID.iam.gserviceaccount.com
+```
+
+---
+
+## Live Demo
+
+Streamlit app — 3 pages:
+
+| Page | What it shows |
+|---|---|
+| **Live Fraud Scorer** | Input form with demo-safe defaults → fraud probability gauge, SHAP bar chart, latency |
+| **Model Performance** | AUC-PR progression chart, SHAP top-10 with business interpretation, all-runs table |
+| **Drift Monitoring** | PSI trends for TransactionAmt + C13, fraud rate trend, alert history |
+
+Run locally:
+```bash
+make streamlit
+# http://localhost:8501
+```
+
+---
+
+## GCP Resources
+
+All resources provisioned across all phases:
+
+| Resource | Type | Name / ID |
+|---|---|---|
+| Project | GCP Project | `fraud-detection-mlops-497717` |
+| Region | All resources | `asia-south1` (org policy enforced) |
+| Raw data bucket | GCS (CMEK) | `fraud-detection-mlops-497717-fraud-raw` |
+| Processed bucket | GCS (CMEK) | `fraud-detection-mlops-497717-fraud-processed` |
+| Artifacts bucket | GCS (CMEK) | `fraud-detection-mlops-497717-fraud-artifacts` |
+| Audit bucket | GCS (CMEK) | `fraud-detection-mlops-497717-fraud-audit` |
+| BQ Dataset | BigQuery (CMEK) | `fraud_detection` |
+| BQ Table | BigQuery | `transactions_raw`, `identity_raw`, `transactions_joined` |
+| BQ Table | BigQuery | `prediction_logs` (partitioned by day) |
+| BQ Table | BigQuery | `drift_logs` (partitioned by day) |
+| KMS keyring | Cloud KMS | `fraud-keyring` (asia-south1) |
+| KMS key (BQ) | Cloud KMS | `bq-key` |
+| KMS key (GCS) | Cloud KMS | `gcs-key` |
+| Training SA | Service Account | `training-sa@...` |
+| Serving SA | Service Account | `serving-sa@...` |
+| Pipeline SA | Service Account | `pipeline-sa@...` |
+| Monitoring SA | Service Account | `monitoring-sa@...` |
+| Vertex Experiment | Vertex AI | `fraud-detection-baseline` |
+| Vizier studies | Vertex AI Vizier | `fraud_xgb_hp_tuning`, `fraud_lgb_hp_tuning` |
+| Model Registry | Vertex AI | `lgb-v8-no-txnid` (production-ready), `lgb-v7-tuned` (staging) |
+| Endpoint | Vertex AI Endpoint | `fraud-detection-endpoint` (n1-standard-4, 1–3 replicas) |
+| API | Cloud Run | `fraud-detection-api` (min=1, max=5, 2Gi) |
+| Streamlit | Cloud Run | `fraud-detection-streamlit` (public) |
+| API Key | Secret Manager | `fraud-api-key` |
+| CI/CD trigger | Cloud Build | Push to `main` → 10-step pipeline |
+| Drift scheduler | Cloud Scheduler | `fraud-daily-drift-check` (6am IST daily) |
+| Alert (drift) | Cloud Monitoring | `feature-drift-alert`, `performance-drift-alert` |
+| Container repo | Artifact Registry | `fraud-detection-repo` |
+
+---
+
+## Quick Start — Full Pipeline
+
+```bash
+# 1. Configure environment
+cp .env.example .env
+# Edit .env — fill in your GCP_PROJECT_ID and bucket names
+
+# 2. Install dependencies
+make install
+
+# 3. Bootstrap GCP (idempotent)
+make gcp-setup
+
+# 4. Ingest data to BigQuery
+make ingest
+
+# 5. Train champion model (Phases 2A/2B)
+ENV=dev python src/training/run_v8_pipeline.py
+
+# 6. Deploy serving infrastructure (Phase 4)
+make deploy-serving          # BQ tables, baseline, API key, Vertex endpoint
+
+# 7. Build and deploy Cloud Run API
+gcloud builds submit --config=cloudbuild.yaml
+
+# 8. Set CLOUD_RUN_API_URL in .env, then:
+make setup-monitoring        # Cloud Scheduler, alert policies, Vertex monitoring
+
+# 9. Run Streamlit demo
+CLOUD_RUN_API_URL=<your-url> API_KEY=<your-key> make streamlit
+```
 
 ---

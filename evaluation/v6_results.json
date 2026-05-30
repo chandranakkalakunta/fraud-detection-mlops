@@ -1,0 +1,29 @@
+{
+  "xgb_v6": {
+    "auc_pr": 0.471511,
+    "auc_roc": 0.8766,
+    "f1": 0.4719,
+    "best_iteration": 1999,
+    "n_features": 388,
+    "n_estimators": 2000,
+    "gcs_uri": "gs://fraud-detection-mlops-497717-fraud-artifacts/models/xgb-v6-converged/",
+    "note": "val_auc_still_improving_at_wall_test_auc_pr_regressed_vs_v5"
+  },
+  "lgb_v6": {
+    "auc_pr": 0.508918,
+    "auc_roc": 0.8909,
+    "f1": 0.5082,
+    "best_iteration": 1990,
+    "n_features": 388,
+    "n_estimators": 2000,
+    "gcs_uri": "gs://fraud-detection-mlops-497717-fraud-artifacts/models/lgb-v6-converged/",
+    "note": "val_auc_still_improving_at_wall_test_auc_pr_improved_vs_v5"
+  },
+  "convergence_finding": {
+    "xgb_val_auc_converged": false,
+    "lgb_val_auc_converged": false,
+    "xgb_test_auc_pr_direction": "regressed (0.4895 -> 0.4715) — overfitting on temporal test distribution",
+    "lgb_test_auc_pr_direction": "improved (0.4913 -> 0.5089) — still under-fitting",
+    "interpretation": "With lr=0.05, both val AUC signals keep improving past 2000 trees. XGBoost test AUC-PR regresses (temporal overfitting), LightGBM improves. Vizier HP search exploring lr=[0.01,0.15] x n_estimators=[500,2000] will find higher-lr combinations that converge within budget."
+  }
+}

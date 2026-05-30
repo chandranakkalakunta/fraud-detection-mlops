@@ -126,3 +126,35 @@ tuning:
     parallel_trials: "${VIZIER_PARALLEL_TRIALS}"
     best_params_xgb_path: "config/best_params_xgb.yaml"
     best_params_lgb_path: "config/best_params_lgb.yaml"
+
+serving:
+  endpoint_display_name: "${VERTEX_ENDPOINT_DISPLAY_NAME}"
+  endpoint_resource_name: "${VERTEX_ENDPOINT_RESOURCE_NAME}"
+  model_resource_name: "${VERTEX_MODEL_RESOURCE_NAME}"
+  model_version: "lgb-v8-no-txnid"
+  calibrated_threshold: "${SERVING_CALIBRATED_THRESHOLD}"
+  min_replica_count: 1
+  max_replica_count: 3
+  machine_type: "n1-standard-4"
+  transformer_gcs_uri: "${SERVING_TRANSFORMER_GCS_URI}"
+  prediction_log_table: "${PREDICTION_LOG_BQ_TABLE}"
+  api_key_secret: "${API_KEY_SECRET_NAME}"
+  cloud_run_service: "${CLOUD_RUN_SERVICE_NAME}"
+  streamlit_service: "${STREAMLIT_SERVICE_NAME}"
+  cloud_run_api_url: "${CLOUD_RUN_API_URL}"
+
+monitoring:
+  drift_log_table: "${DRIFT_LOG_BQ_TABLE}"
+  psi_alert_threshold: 0.2
+  fraud_rate_alert_stddev: 2.0
+  training_fraud_rate: 0.0351
+  monitoring_window_days: 7
+  scheduler_schedule: "30 0 * * *"
+  scheduler_timezone: "UTC"
+  alert_email: "${ALERT_EMAIL}"
+  feature_drift_alert_policy: "${FEATURE_DRIFT_ALERT_POLICY}"
+  performance_drift_alert_policy: "${PERFORMANCE_DRIFT_ALERT_POLICY}"
+  baseline_gcs_path: "monitoring/baseline_distributions.json"
+  monitored_features:
+    - "TransactionAmt"
+    - "C13"

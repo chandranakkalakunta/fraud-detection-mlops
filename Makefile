@@ -8,7 +8,8 @@ export
 
 .PHONY: help setup install lint test test-cov clean \
         gcp-setup ingest baseline notebook \
-        docker-build docker-run
+        docker-build docker-run \
+        deploy-serving setup-monitoring api streamlit
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -73,6 +74,22 @@ docker-run: ## Run container locally (requires .env)
 	  --env-file .env \
 	  -p 8080:8080 \
 	  fraud-detection:dev
+
+# ─── Phase 4 — Serving & Monitoring ─────────────────────────────────────────
+deploy-serving: ## Bootstrap serving: BQ tables, baseline, API key, Vertex endpoint
+	@test -n "$$GCP_PROJECT_ID" || (echo "ERROR: GCP_PROJECT_ID not set"; exit 1)
+	ENV=$(ENV) python scripts/04_deploy_serving.py
+
+setup-monitoring: ## Cloud Scheduler, Vertex Model Monitoring, alert policies
+	@test -n "$$GCP_PROJECT_ID" || (echo "ERROR: GCP_PROJECT_ID not set"; exit 1)
+	ENV=$(ENV) python scripts/05_setup_monitoring.py
+
+api: ## Run FastAPI server locally (port 8080)
+	@test -n "$$GCP_PROJECT_ID" || (echo "ERROR: GCP_PROJECT_ID not set"; exit 1)
+	ENV=$(ENV) uvicorn src.serving.api:app --host 0.0.0.0 --port 8080 --reload
+
+streamlit: ## Run Streamlit demo locally (port 8501)
+	ENV=$(ENV) streamlit run streamlit_app/app.py --server.port 8501
 
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
 clean: ## Remove build artifacts and caches

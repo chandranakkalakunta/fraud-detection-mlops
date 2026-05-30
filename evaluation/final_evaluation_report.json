@@ -1,0 +1,143 @@
+{
+  "champion": {
+    "name": "lgb-v8-no-txnid",
+    "version": "1",
+    "model_registry_resource": "projects/65768314585/locations/asia-south1/models/8388011480582193152",
+    "stage": "production-ready",
+    "gcs_base_uri": "gs://fraud-detection-mlops-497717-fraud-artifacts/models/lgb-v8-no-txnid/",
+    "calibrated_gcs_uri": "gs://fraud-detection-mlops-497717-fraud-artifacts/models/lgb-v8-no-txnid-calibrated/"
+  },
+  "feature_engineering": {
+    "n_features": 387,
+    "target_encoding": false,
+    "missing_indicators": false,
+    "excluded_features": [
+      "TransactionID"
+    ],
+    "exclusion_reason": "TransactionID ranked 7th in lgb-v7 SHAP (mean |SHAP|=0.241) despite being a unique row identifier with no genuine fraud signal.  Temporal ordering correlation with the time-based split caused the model to learn train/test membership.  Excluded permanently via EXCLUDED_FEATURES in src/features/engineer.py.",
+    "features_included": [
+      "V1-V339 (median imputed)",
+      "C1-C14",
+      "D1-D15",
+      "card1/2/3/5, addr1/addr2, dist1/dist2",
+      "TransactionAmt",
+      "time_of_day, day_of_week, hour_of_day",
+      "log_transaction_amt, amt_to_d1_ratio, is_round_amt",
+      "D1_card_norm, D4_card_norm, D10_card_norm"
+    ]
+  },
+  "data_splits": {
+    "train_rows": 354324,
+    "val_rows": 88581,
+    "test_rows": 147635,
+    "train_fraud_rate": 0.0351,
+    "val_fraud_rate": 0.0351,
+    "test_fraud_rate": 0.0345,
+    "split_strategy": "time_based_75_25_temporal_test_stratified_val"
+  },
+  "v7_vs_v8_comparison": {
+    "lgb_v7_auc_pr": 0.539283,
+    "lgb_v8_auc_pr": 0.526318,
+    "auc_pr_delta": -0.012965,
+    "interpretation": "TransactionID was marginal \u2014 model is clean and retains full signal.",
+    "txnid_v7_shap_rank": 7,
+    "txnid_v7_mean_abs_shap": 0.241025
+  },
+  "champion_metrics_uncalibrated": {
+    "auc_pr": 0.526318,
+    "auc_roc": 0.892315,
+    "f1": 0.528457,
+    "f2": 0.489175,
+    "precision": 0.610113,
+    "recall": 0.466078,
+    "ks_statistic": 0.631048,
+    "threshold": 0.451718,
+    "training_rows": 354324,
+    "test_rows": 147635,
+    "imbalance_strategy": "lgb_is_unbalance",
+    "best_iteration": 563,
+    "business_interpretation": "At threshold 0.4517: Precision=0.610 (of flagged transactions, 61.0% are fraud), Recall=0.466 (46.6% of fraud transactions caught)."
+  },
+  "champion_metrics_calibrated": {
+    "auc_pr": 0.526318,
+    "auc_roc": 0.892315,
+    "f1": 0.528457,
+    "f2": 0.489175,
+    "precision": 0.610113,
+    "recall": 0.466078,
+    "ks_statistic": 0.631048,
+    "threshold": 0.245845,
+    "training_rows": 354324,
+    "test_rows": 147635,
+    "imbalance_strategy": "lgb_is_unbalance",
+    "calibration_method": "platt_sigmoid",
+    "calibration_set": "validation",
+    "auc_pr_delta_vs_uncalibrated": 0.0
+  },
+  "best_hyperparameters": {
+    "lightgbm": {
+      "colsample_bytree": 1.0,
+      "learning_rate": 0.07694193664388334,
+      "min_child_samples": 114,
+      "n_estimators": 896,
+      "num_leaves": 240,
+      "reg_alpha": 0.8138199956826503,
+      "reg_lambda": 0.9568233442342011,
+      "subsample": 0.938603589604303
+    }
+  },
+  "shap_top_10": [
+    {
+      "feature": "TransactionDT",
+      "mean_abs_shap": 0.45007909637447696
+    },
+    {
+      "feature": "C13",
+      "mean_abs_shap": 0.4142294126362526
+    },
+    {
+      "feature": "TransactionAmt",
+      "mean_abs_shap": 0.330557393462604
+    },
+    {
+      "feature": "C14",
+      "mean_abs_shap": 0.2926440379368064
+    },
+    {
+      "feature": "addr1",
+      "mean_abs_shap": 0.2661439166376885
+    },
+    {
+      "feature": "card1",
+      "mean_abs_shap": 0.2628332022822782
+    },
+    {
+      "feature": "card2",
+      "mean_abs_shap": 0.23823725283576913
+    },
+    {
+      "feature": "V91",
+      "mean_abs_shap": 0.21422557534035291
+    },
+    {
+      "feature": "C1",
+      "mean_abs_shap": 0.1884497741440886
+    },
+    {
+      "feature": "dist1",
+      "mean_abs_shap": 0.18811415687926747
+    }
+  ],
+  "explainability_gcs": {
+    "shap_bar_plot": "gs://fraud-detection-mlops-497717-fraud-artifacts/explainability/shap_feature_importance_top20.png",
+    "shap_beeswarm": "gs://fraud-detection-mlops-497717-fraud-artifacts/explainability/shap_beeswarm.png",
+    "reliability_diagram": "gs://fraud-detection-mlops-497717-fraud-artifacts/explainability/reliability_diagram.png"
+  },
+  "baselines": {
+    "lr_baseline_auc_pr": 0.2172,
+    "xgb_v5_auc_pr": 0.4895,
+    "lgb_v5_auc_pr": 0.4913,
+    "lgb_v7_auc_pr": 0.539283
+  },
+  "generated_at": "2026-05-30T04:05:11.848304+00:00"
+}

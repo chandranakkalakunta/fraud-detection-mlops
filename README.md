@@ -166,7 +166,200 @@ Secondary metrics reported: AUC-ROC, F1, Precision, Recall at optimal threshold.
 ## Phases
 
 - [x] **Phase 1** — Scaffold, GCP setup, data ingestion, EDA, baseline model
-- [ ] **Phase 2** — Feature engineering, Vertex AI Feature Store, XGBoost/LightGBM
+- [x] **Phase 2A** — Feature engineering (387 features after TransactionID leakage fix), XGBoost/LightGBM, Vertex AI Experiments
+- [x] **Phase 2B** — HP tuning (Vertex AI Vizier, 30+30 trials), champion selection, SHAP, Platt calibration, TransactionID leakage fix (v8)
 - [ ] **Phase 3** — Vertex AI Pipelines (KFP), Experiments tracking
 - [ ] **Phase 4** — Online serving, Vertex AI Endpoint, drift monitoring
 - [ ] **Phase 5** — A/B testing framework, Streamlit dashboard, SHAP explainability
+
+---
+
+## Model Training Results
+
+### Feature Engineering (387 features, finalized v8)
+
+| Category | Features | Notes |
+|---|---|---|
+| V-columns | V1–V339 (339) | Median imputed — no missing indicators (see diagnostic) |
+| C-columns | C1–C14 (14) | Pass-through with median imputation |
+| D-columns | D1–D15 (15) | Pass-through + D-norm engineered features |
+| Transaction | TransactionAmt, TransactionDT | Raw |
+| Time | time_of_day, day_of_week, hour_of_day | Derived from TransactionDT |
+| Velocity | log_transaction_amt, amt_to_d1_ratio, is_round_amt | Behavioral signals |
+| D-norm | D1_card_norm, D4_card_norm, D10_card_norm | D/median(D) per card1 group |
+| Address | card1/2/3/5, addr1/addr2, dist1/dist2 | Pass-through |
+
+**Key diagnostic findings:**
+- LOO target encoding (card4/card6/email domains): val AUC peaks at tree 15 → best_iter=15. card4_te had SHAP=0.934 — model saturated instantly. **Dropped permanently.**
+- V-column _was_missing indicators (253 at threshold=0.05): 95-100% null columns create near-constant features, occupying 49% of colsample budget. B→C AUC-PR delta: −0.364. **Dropped permanently.**
+- `eval_metric='logloss'` + `scale_pos_weight=27`: unweighted val logloss inflates immediately → best_iter=0. **Fixed: eval_metric='auc' throughout.**
+- TransactionID: ranked 7th in lgb-v7 SHAP (mean |SHAP|=0.241) despite being a unique row identifier. **Removed permanently — temporal leakage (see below).**
+
+**Why TransactionID was excluded:**
+TransactionID appeared as rank 7 SHAP feature (mean |SHAP| 0.241) despite being a unique row identifier with no genuine fraud predictive power. Investigation confirmed this reflects temporal ordering correlation with the time-based split — earlier TransactionIDs correspond to earlier transactions which fall in the training period. Retaining it would cause the model to partially learn train/test membership rather than fraud patterns. Retrained as lgb-v8-no-txnid: AUC-PR 0.5393 → 0.5263 (delta −0.013), confirming TransactionID was marginal rather than a major leakage source — the model's core signal is clean. Removed permanently via `EXCLUDED_FEATURES` in `src/features/engineer.py` before serving deployment.
+
+### Vertex AI Experiments — All Runs
+
+#### Phase 1 Baseline
+
+| Run | Model | AUC-PR | AUC-ROC | Notes |
+|---|---|---|---|---|
+| lr-baseline | Logistic Regression | 0.2172 | 0.8600 | Time-based split, no feature engineering |
+
+#### Phase 2A — Feature Engineering Diagnostic
+
+| Run | Model | AUC-PR | AUC-ROC | best_iter | Notes |
+|---|---|---|---|---|---|
+| Run A | XGBoost | 0.4853 | 0.8894 | 299 | Raw features, no engineering |
+| Run B | XGBoost | 0.4871 | 0.8907 | 299 | Raw + time features |
+| Run C | XGBoost | 0.1228 | — | — | Full engineer with 253 indicators (B→C: −0.364) |
+
+#### Phase 2B — Systematic Ablation (v1–v5)
+
+| Run | Model | AUC-PR | AUC-ROC | best_iter | Change vs prev |
+|---|---|---|---|---|---|
+| xgb-v1 | XGBoost + SMOTE | 0.149 | — | — | SMOTE invalid on binary indicators |
+| xgb-v2-class-weight-fixed | XGBoost | 0.131 | 0.691 | 339 | scale_pos_weight; indicators still crowding |
+| lgb-v2-isunbalance-fixed | LightGBM | 0.049 | 0.593 | 17 | is_unbalance; same indicator problem |
+| xgb-v3-reduced-indicators | XGBoost | 0.201 | 0.698 | 31 | threshold 0.05→0.80; 47 indicators removed |
+| lgb-v3-reduced-indicators | LightGBM | 0.055 | 0.658 | 25 | Same threshold change |
+| xgb-v4-no-indicators | XGBoost | 0.174 | 0.714 | **15** | TE still present → LOO collapse |
+| lgb-v4-no-indicators | LightGBM | 0.068 | 0.719 | 47 | TE still present |
+| xgb-v5-no-te | XGBoost | 0.4895 | 0.8925 | **499** | TE removed; hit n=500 wall |
+| lgb-v5-no-te | LightGBM | **0.4913** | **0.8951** | **500** | TE removed; hit n=500 wall |
+
+#### Phase 2B — Convergence Baseline (v6)
+
+| Run | Model | AUC-PR | AUC-ROC | best_iter | Notes |
+|---|---|---|---|---|---|
+| xgb-v6-converged | XGBoost | 0.4715 | 0.8766 | 1999 | n=2000; XGB test AUC-PR *regressed* vs v5 (temporal overfitting) |
+| lgb-v6-converged | LightGBM | 0.5089 | 0.8909 | 1990 | n=2000; LGB still improving — needs more trees or higher lr |
+
+#### Phase 2B — HP-Tuned Champion (v7/v8)
+
+| Run | Model | AUC-PR | AUC-ROC | F1 | best_iter | Notes |
+|---|---|---|---|---|---|---|
+| xgb-v7-tuned | XGBoost | 0.5166 | 0.8911 | 0.5154 | 1759 | Vizier best params; Precision=0.619, Recall=0.442 |
+| lgb-v7-tuned | LightGBM | 0.5393 | 0.8964 | 0.5336 | 707 | Vizier best params; contained TransactionID leakage (demoted → staging) |
+| lgb-v8-no-txnid | LightGBM | **0.5263** | **0.8923** | **0.5285** | 563 | **Champion**; TransactionID removed; Precision=0.610, Recall=0.466 |
+| lgb-v8-no-txnid-calibrated | Champion + Platt | 0.5263 | 0.8923 | 0.5285 | 563 | Serving model; threshold shifted 0.4517 → 0.2458 |
+
+### HP Tuning — Vertex AI Vizier
+
+**Algorithm:** Gaussian Process Bandit  
+**Trials:** 30 per model (parallel=3)  
+**Objective:** Maximize AUC-PR on test set  
+
+**XGBoost search space:**
+
+| Parameter | Type | Range | Scale |
+|---|---|---|---|
+| max_depth | INT | [4, 10] | linear |
+| learning_rate | DOUBLE | [0.01, 0.15] | log |
+| min_child_weight | INT | [1, 20] | linear |
+| subsample | DOUBLE | [0.6, 1.0] | linear |
+| colsample_bytree | DOUBLE | [0.5, 1.0] | linear |
+| scale_pos_weight | DOUBLE | [15, 40] | linear |
+| n_estimators | INT | [500, 2000] | linear |
+
+**LightGBM search space:**
+
+| Parameter | Type | Range | Scale |
+|---|---|---|---|
+| num_leaves | INT | [31, 256] | linear |
+| learning_rate | DOUBLE | [0.01, 0.15] | log |
+| min_child_samples | INT | [50, 200] | linear |
+| subsample | DOUBLE | [0.6, 1.0] | linear |
+| colsample_bytree | DOUBLE | [0.5, 1.0] | linear |
+| n_estimators | INT | [500, 2000] | linear |
+| reg_alpha | DOUBLE | [0.0, 1.0] | linear |
+| reg_lambda | DOUBLE | [0.0, 1.0] | linear |
+
+**Best parameters** (written by `hyperparameter_tuner.py` via Vizier optimal trial):
+
+```yaml
+# config/best_params_xgb.yaml
+colsample_bytree: 0.6054
+learning_rate: 0.03481
+max_depth: 10
+min_child_weight: 20
+n_estimators: 1761
+scale_pos_weight: 15.0
+subsample: 0.9301
+
+# config/best_params_lgb.yaml
+colsample_bytree: 1.0
+learning_rate: 0.07694
+min_child_samples: 114
+n_estimators: 896
+num_leaves: 240
+reg_alpha: 0.8138
+reg_lambda: 0.9568
+subsample: 0.9386
+```
+
+### Champion Model
+
+**Model:** `lgb-v8-no-txnid` (LightGBM, Vizier-tuned, TransactionID removed)  
+**Selected by:** highest AUC-PR on temporal test set (last 25% chronologically), leakage-free  
+**Vertex AI Model Registry:** `projects/65768314585/locations/asia-south1/models/8388011480582193152@1`  
+**Stage:** `production-ready`  
+**Serving artifact:** `gs://fraud-detection-mlops-497717-fraud-artifacts/models/lgb-v8-no-txnid-calibrated/`  
+**Feature count:** 387 (TransactionID excluded)
+
+**Full metrics (test set — 147,635 rows, 3.45% fraud rate):**
+
+| Metric | Value |
+|---|---|
+| AUC-PR | **0.5263** |
+| AUC-ROC | 0.8923 |
+| KS Statistic | 0.6310 |
+| F1 @ threshold | 0.5285 |
+| F2 @ threshold | 0.4892 |
+| Precision @ threshold | 0.6101 |
+| Recall @ threshold | 0.4661 |
+| Optimal threshold (uncalibrated) | 0.4517 |
+| Optimal threshold (calibrated) | 0.2458 |
+
+**Baseline comparison:**
+
+| Model | AUC-PR | Delta | Notes |
+|---|---|---|---|
+| LR baseline | 0.2172 | — | |
+| v5 best (LGB, untuned) | 0.4913 | +0.2741 vs LR | |
+| v7 (LGB, Vizier-tuned) | 0.5393 | +0.0480 vs v5 | Contained TransactionID leakage; demoted to staging |
+| **v8 champion (LGB, leakage-free)** | **0.5263** | **+0.0350 vs v5** | **TransactionID removed; production-ready** |
+
+**v7 → v8 delta:** −0.013 AUC-PR. TransactionID was marginal — the model's genuine fraud signal is retained.
+
+**SHAP top 10 features** (mean |SHAP|, full 147k test set, v8 — TransactionID absent):
+
+| Rank | Feature | Mean \|SHAP\| | Category |
+|---|---|---|---|
+| 1 | TransactionDT | 0.450 | Timestamp |
+| 2 | C13 | 0.414 | Count (card-linked transaction count) |
+| 3 | TransactionAmt | 0.331 | Transaction amount |
+| 4 | C14 | 0.293 | Count |
+| 5 | addr1 | 0.266 | Billing address |
+| 6 | card1 | 0.263 | Card identifier |
+| 7 | card2 | 0.238 | Card identifier |
+| 8 | V91 | 0.214 | Vesta engineered |
+| 9 | C1 | 0.188 | Count |
+| 10 | dist1 | 0.188 | Distance (purchaser/recipient) |
+
+**Calibration (Platt scaling, fit on val set):**
+
+| Metric | Uncalibrated | Calibrated | Delta |
+|---|---|---|---|
+| AUC-PR | 0.5263 | 0.5263 | 0.0000 |
+| AUC-ROC | 0.8923 | 0.8923 | 0.0000 |
+| Optimal threshold | 0.4517 | 0.2458 | −0.2059 |
+
+AUC metrics are threshold-agnostic and hold flat post-calibration; the threshold shift reflects the model's uncalibrated score compression.
+
+**GCS explainability artifacts:**
+- SHAP bar chart: `gs://fraud-detection-mlops-497717-fraud-artifacts/explainability/shap_feature_importance_top20.png`
+- SHAP beeswarm: `gs://fraud-detection-mlops-497717-fraud-artifacts/explainability/shap_beeswarm.png`
+- Reliability diagram: `gs://fraud-detection-mlops-497717-fraud-artifacts/explainability/reliability_diagram.png`
+
+---

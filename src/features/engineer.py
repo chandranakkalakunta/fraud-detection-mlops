@@ -19,6 +19,17 @@ logger = get_logger(__name__)
 # V1–V339 as declared in TRANSACTION_SCHEMA
 ALL_V_COLS: list[str] = [f"V{i}" for i in range(1, 340)]
 
+# ─── Columns permanently excluded from the feature matrix ──────────────────
+# TransactionID is a unique row identifier with no genuine fraud predictive
+# power.  SHAP analysis on lgb-v7 placed it at rank 7 (mean |SHAP| = 0.241),
+# reflecting temporal ordering correlation with the time-based train/test
+# split — lower TransactionIDs correspond to earlier transactions that fall in
+# the training period.  Retaining it causes the model to partially learn
+# train/test membership rather than fraud signal, which is data leakage.
+# Removed before returning the feature matrix so the leakage can never
+# re-enter via any code path that calls transform().
+EXCLUDED_FEATURES: list[str] = ["TransactionID"]
+
 # Non-V numeric pass-through columns requiring explicit median imputation.
 # Covers the IEEE-CIS columns that can have meaningful null rates.
 # D-norm cols (D1, D4, D10) are also in this list; their per-card normalisation
@@ -155,6 +166,14 @@ class FraudFeatureEngineer:
             raise RuntimeError("Call fit() before transform()")
 
         df = X.copy()
+
+        # Drop permanently excluded columns before any other processing.
+        # This ensures leaky identifiers (e.g. TransactionID) can never
+        # propagate into the feature matrix via any downstream code path.
+        cols_to_drop = [c for c in EXCLUDED_FEATURES if c in df.columns]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+
         # Collect all brand-new columns here; concat once at the end to avoid
         # the pandas fragmentation penalty that comes from ~250 individual inserts.
         new_cols: dict[str, object] = {}

@@ -176,6 +176,26 @@ Secondary metrics reported: AUC-ROC, F1, Precision, Recall at optimal threshold.
 
 ## Model Training Results
 
+### Full Model Progression
+
+| Version | Model | AUC-PR | AUC-ROC | Key Decision |
+|---|---|---|---|---|
+| lr-baseline | Logistic Regression | 0.2172 | 0.8600 | Time-based split, no feature engineering — establishes floor |
+| Run A | XGBoost | 0.4853 | 0.8894 | Raw features; confirms tree models far outperform LR |
+| Run B | XGBoost | 0.4871 | 0.8907 | Time features added; marginal gain |
+| Run C | XGBoost | 0.1228 | — | 253 V-column missing indicators; AUC-PR collapsed −0.364 |
+| xgb-v2 | XGBoost | 0.131 | 0.691 | SMOTE + `scale_pos_weight`; indicators still crowding feature budget |
+| lgb-v2 | LightGBM | 0.049 | 0.593 | `is_unbalance`; same indicator problem |
+| xgb-v3 | XGBoost | 0.201 | 0.698 | Raised indicator threshold 0.05→0.80; partial fix insufficient |
+| xgb-v4 | XGBoost | 0.174 | 0.714 | Indicators removed; LOO target encoding collapse (`card4_te` SHAP=0.934) |
+| xgb-v5 | XGBoost | 0.4895 | 0.8925 | TE removed; clean signal — hit n=500 estimator ceiling |
+| lgb-v5 | LightGBM | 0.4913 | 0.8951 | TE removed; clean signal — hit n=500 estimator ceiling |
+| xgb-v6 | XGBoost | 0.4715 | 0.8766 | n=2000; AUC-PR *regressed* vs v5 — temporal overfitting |
+| lgb-v6 | LightGBM | 0.5089 | 0.8909 | n=2000; still improving — Vizier HP tuning needed |
+| xgb-v7-tuned | XGBoost | 0.5166 | 0.8911 | Vizier 30-trial GP Bandit; `best_iter=1759` |
+| lgb-v7-tuned | LightGBM | 0.5393 | 0.8964 | Vizier best params; TransactionID leakage identified → demoted to staging |
+| **lgb-v8-no-txnid** | **LightGBM** | **0.5263** | **0.8923** | **TransactionID excluded; leakage-free — production-ready champion** |
+
 ### Feature Engineering (387 features, finalized v8)
 
 | Category | Features | Notes |
@@ -199,6 +219,8 @@ Secondary metrics reported: AUC-ROC, F1, Precision, Recall at optimal threshold.
 TransactionID appeared as rank 7 SHAP feature (mean |SHAP| 0.241) despite being a unique row identifier with no genuine fraud predictive power. Investigation confirmed this reflects temporal ordering correlation with the time-based split — earlier TransactionIDs correspond to earlier transactions which fall in the training period. Retaining it would cause the model to partially learn train/test membership rather than fraud patterns. Retrained as lgb-v8-no-txnid: AUC-PR 0.5393 → 0.5263 (delta −0.013), confirming TransactionID was marginal rather than a major leakage source — the model's core signal is clean. Removed permanently via `EXCLUDED_FEATURES` in `src/features/engineer.py` before serving deployment.
 
 ### Vertex AI Experiments — All Runs
+
+> All runs are tracked in Vertex AI Experiments (experiment: `fraud-detection-baseline`). Every trial stores hyperparameters, metrics, and GCS artifact URIs. Any two runs can be compared directly via the GCP Console or `aiplatform.ExperimentRun.list(experiment="fraud-detection-baseline")`.
 
 #### Phase 1 Baseline
 
@@ -334,18 +356,18 @@ subsample: 0.9386
 
 **SHAP top 10 features** (mean |SHAP|, full 147k test set, v8 — TransactionID absent):
 
-| Rank | Feature | Mean \|SHAP\| | Category |
-|---|---|---|---|
-| 1 | TransactionDT | 0.450 | Timestamp |
-| 2 | C13 | 0.414 | Count (card-linked transaction count) |
-| 3 | TransactionAmt | 0.331 | Transaction amount |
-| 4 | C14 | 0.293 | Count |
-| 5 | addr1 | 0.266 | Billing address |
-| 6 | card1 | 0.263 | Card identifier |
-| 7 | card2 | 0.238 | Card identifier |
-| 8 | V91 | 0.214 | Vesta engineered |
-| 9 | C1 | 0.188 | Count |
-| 10 | dist1 | 0.188 | Distance (purchaser/recipient) |
+| Rank | Feature | Mean \|SHAP\| | Category | Business Interpretation |
+|---|---|---|---|---|
+| 1 | TransactionDT | 0.450 | Timestamp | Fraud rate is strongly time-dependent; off-hours and specific day-of-week patterns separate fraud from legitimate transactions |
+| 2 | C13 | 0.414 | Count feature | Transaction count linked to the card; high velocity signals a compromised card or mule account |
+| 3 | TransactionAmt | 0.331 | Amount | Fraudsters probe with small test charges or make large unauthorized purchases; amount distribution diverges significantly from legitimate |
+| 4 | C14 | 0.293 | Count feature | Secondary card transaction count; corroborates C13 velocity signal — both elevated together is a strong fraud flag |
+| 5 | addr1 | 0.266 | Billing address | Billing zip code; mismatches with shipping address or sudden zip code changes are classic card-not-present fraud indicators |
+| 6 | card1 | 0.263 | Card identifier | Issuer or BIN-level identifier; certain card bins carry systematically higher fraud rates |
+| 7 | card2 | 0.238 | Card identifier | Card-associated zip code; cross-validates addr1 and flags geographic inconsistencies between card issuance and transaction location |
+| 8 | V91 | 0.214 | Vesta engineered | Vesta proprietary risk signal; semantics are opaque but strong discriminative power suggests it encodes known fraud pattern combinations |
+| 9 | C1 | 0.188 | Count feature | Number of distinct addresses associated with the payment card; sudden increases flag account takeover attempts |
+| 10 | dist1 | 0.188 | Distance | Distance between purchaser and recipient addresses; large gaps correlate with card-not-present fraud where shipping and billing locations diverge |
 
 **Calibration (Platt scaling, fit on val set):**
 

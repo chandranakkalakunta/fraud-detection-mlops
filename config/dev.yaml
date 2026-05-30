@@ -113,3 +113,16 @@ data_validation:
   min_rows_identity: 100000
   expected_fraud_rate_min: 0.03
   expected_fraud_rate_max: 0.05
+
+tuning:
+  convergence:
+    xgb_n_estimators: "${XGB_V6_N_ESTIMATORS}"
+    lgb_n_estimators: "${LGB_V6_N_ESTIMATORS}"
+    early_stopping_rounds: "${V6_EARLY_STOPPING_ROUNDS}"
+  vizier:
+    xgb_study_name: "${VIZIER_XGB_STUDY_NAME}"
+    lgb_study_name: "${VIZIER_LGB_STUDY_NAME}"
+    max_trials: "${VIZIER_MAX_TRIALS}"
+    parallel_trials: "${VIZIER_PARALLEL_TRIALS}"
+    best_params_xgb_path: "config/best_params_xgb.yaml"
+    best_params_lgb_path: "config/best_params_lgb.yaml"

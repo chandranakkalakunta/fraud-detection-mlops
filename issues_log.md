@@ -342,4 +342,23 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **Cause:** All streamlit versions through 1.41.0 cap pillow at `<12` (`pillow<11` through 1.39.0, `pillow<12` from 1.40.0). `pillow==12.2.0` is unreachable with any current streamlit version.  
 **Fix:** Removed `pillow==12.2.0` explicit pin. Upgraded `streamlit==1.37.0` → `streamlit==1.40.0`, which allows `pillow<12` — resolves to `pillow==11.3.0`, which contains all the same CVE patches as 12.x for the relevant vulnerabilities. The CVE fix is delivered via streamlit upgrade rather than direct pillow pinning.  
 **Lesson:** When a CVE fix requires a version beyond what a consuming package allows, upgrade the consuming package first. If the consuming package has its own ceiling, work within that ceiling — 11.3.0 patches the same vulnerabilities as 12.x.  
+**Commit:** `345dade`
+
+---
+
+## 35. Cloud Build Step 10 smoke test fails — `pipeline-sa` denied access to Secret Manager
+
+**When:** Cloud Build smoke-test step — `gcloud secrets versions access latest --secret=fraud-api-key`.  
+**Cause:** `pipeline-sa` lacked `roles/secretmanager.secretAccessor`. The secret access silently returned an error, leaving `SECRET_KEY` empty. With no API key header, the Cloud Run `/health` call returned 401; `curl -sf` suppressed the error and left `HEALTH_RESP` empty; the downstream `json.load()` then raised `JSONDecodeError: Expecting value` — masking the real cause.  
+**Fix:** Granted `roles/secretmanager.secretAccessor` to `pipeline-sa` at project level (applied immediately). Added to `scripts/01_gcp_setup.sh`. Added `set -euo pipefail` to the smoke test and an explicit `[[ -z "$SECRET_KEY" ]]` guard so the step fails fast with a clear error message rather than cascading into JSON decode failures.  
+**Lesson:** `curl -sf` silently swallows HTTP errors. Always validate that fetched secrets/tokens are non-empty before using them in downstream calls, or use `set -e` so the step fails at the point of failure rather than at a confusing downstream symptom.  
+**Commit:** `(current)`
+
+---
+
+## 36. Cloud Build smoke test URL: `${_CLOUD_RUN_SERVICE}` substitution correct but hardened
+
+**When:** Reviewing Step 10 after the Secret Manager fix.  
+**Cause:** The URL was already fetched dynamically via `gcloud run services describe ${_CLOUD_RUN_SERVICE}`. However, the step had no `set -euo pipefail`, so a failed URL lookup (e.g., wrong substitution value) would silently continue with an empty `SVC_URL` and produce a misleading `curl` error.  
+**Fix:** Added `set -euo pipefail` and hardcoded `fraud-detection-api` and `asia-south1` in the describe command (removing indirection through substitution variables in the smoke test itself — substitutions are appropriate for build/deploy steps but add fragility to verification steps).  
 **Commit:** `(current)`

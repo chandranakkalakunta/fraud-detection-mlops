@@ -243,16 +243,21 @@ steps:
     args:
       - -c
       - |
-        # Get deployed service URL dynamically — never hardcode
-        SVC_URL=$$(gcloud run services describe ${_CLOUD_RUN_SERVICE} \
-          --region=${_GCP_REGION} --project="$PROJECT_ID" \
+        set -euo pipefail
+
+        # Fetch deployed service URL dynamically — never hardcode
+        SVC_URL=$$(gcloud run services describe fraud-detection-api \
+          --region=asia-south1 --project="$PROJECT_ID" \
           --format="value(status.url)")
         echo "Cloud Run URL: $$SVC_URL"
 
         # Identity token scoped to the service URL (requires iam.serviceAccountTokenCreator)
         ID_TOKEN=$$(gcloud auth print-identity-token --audiences="$$SVC_URL")
+
+        # Fetch API key — requires secretmanager.secretAccessor on pipeline-sa
         SECRET_KEY=$$(gcloud secrets versions access latest \
           --secret="${_API_KEY_SECRET}" --project="$PROJECT_ID")
+        [[ -z "$$SECRET_KEY" ]] && { echo "ERROR: SECRET_KEY is empty — check Secret Manager IAM"; exit 1; }
 
         # Health check
         HEALTH_RESP=$$(curl -sf \

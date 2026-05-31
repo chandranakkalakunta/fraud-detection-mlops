@@ -33,6 +33,7 @@ gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
   run.googleapis.com \
+  cloudscheduler.googleapis.com \
   monitoring.googleapis.com \
   logging.googleapis.com \
   secretmanager.googleapis.com \
@@ -159,13 +160,23 @@ bind "${SERVE_EMAIL}" "roles/aiplatform.user"
 bind "${SERVE_EMAIL}" "roles/bigquery.dataEditor"
 bind "${SERVE_EMAIL}" "roles/bigquery.jobUser"
 
-# Pipeline SA: orchestrate Vertex Pipelines, read/write all buckets
+# Pipeline SA: orchestrate Vertex Pipelines, CI/CD builds, and Cloud Run deployments
 PIPE_EMAIL="${PIPELINE_SA}"
 bind "${PIPE_EMAIL}" "roles/aiplatform.user"
 bind "${PIPE_EMAIL}" "roles/storage.objectAdmin"
 bind "${PIPE_EMAIL}" "roles/bigquery.dataEditor"
 bind "${PIPE_EMAIL}" "roles/bigquery.jobUser"
 bind "${PIPE_EMAIL}" "roles/iam.serviceAccountUser"
+bind "${PIPE_EMAIL}" "roles/logging.logWriter"
+bind "${PIPE_EMAIL}" "roles/artifactregistry.writer"
+bind "${PIPE_EMAIL}" "roles/run.admin"
+
+# Pipeline SA needs to act as serving-sa when deploying Cloud Run with --service-account
+gcloud iam service-accounts add-iam-policy-binding "${SERVING_SA}" \
+  --member="serviceAccount:${PIPE_EMAIL}" \
+  --role="roles/iam.serviceAccountUser" \
+  --condition=None \
+  --quiet 2>/dev/null || true
 
 # Monitoring SA: read metrics, write alerts
 MON_EMAIL="${MONITORING_SA}"

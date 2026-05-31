@@ -281,7 +281,7 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **When:** Cloud Build smoke-test step — `gcloud auth print-identity-token --audiences=...`.  
 **Cause:** Cloud Run requires OIDC identity tokens for authenticated requests. Generating an identity token requires `roles/iam.serviceAccountTokenCreator` on the calling identity. `pipeline-sa` had `roles/iam.serviceAccountUser` (impersonate other SAs) but not `serviceAccountTokenCreator` (mint OIDC tokens for itself). The two roles are distinct: `serviceAccountUser` allows acting-as a SA; `serviceAccountTokenCreator` allows minting tokens.  
 **Fix:** Added `roles/iam.serviceAccountTokenCreator` to `pipeline-sa` in `scripts/01_gcp_setup.sh`. Applied immediately via `gcloud`. Also scoped the identity token to the service audience (`--audiences=$$SVC_URL`) and added `--project` to the `gcloud run services describe` call to prevent project resolution failures.  
-**Commit:** `(current)`
+**Commit:** `aa01864`
 
 ---
 
@@ -290,7 +290,7 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **When:** Cloud Build smoke-test step — `gcloud run services describe`.  
 **Cause:** `gcloud run services describe` was called without `--project="$PROJECT_ID"`. In Cloud Build, the active project is `$PROJECT_ID` but relying on implicit project resolution is fragile — if the build SA's default config differs, the describe call returns the wrong URL or errors out.  
 **Fix:** Added `--project="$PROJECT_ID"` to the `gcloud run services describe` call. Also converted all curl `-H` flags to `--header` for consistency with the canonical GCP documentation style.  
-**Commit:** `(current)`
+**Commit:** `aa01864`
 
 ---
 
@@ -299,7 +299,7 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **When:** Cloud Run container startup — `uvicorn` or other pip-installed scripts not found in certain execution contexts.  
 **Cause:** Multi-stage build installs packages with `pip install --user` in the builder stage (runs as root → installs to `/root/.local`). Runtime stage copies to `/home/appuser/.local` and sets `PATH="/home/appuser/.local/bin:..."`. When a process runs as root (e.g., container health check probes, or a layer that hasn't switched to `appuser` yet), `/root/.local/bin` is not in PATH and scripts are not found.  
 **Fix:** Extended PATH to include both locations: `PATH="/home/appuser/.local/bin:/root/.local/bin:${PATH}"`.  
-**Commit:** `(current)`
+**Commit:** `aa01864`
 
 ---
 
@@ -313,7 +313,7 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 - `urllib3` — CVE patched in 2.x, but `kfp==2.7.0` requires `urllib3<2.0.0`; pinned at 1.26.20 with a comment explaining the constraint  
 
 **Fix:** Pinned `urllib3==1.26.20` (with `# CVE-pinned` comment explaining kfp constraint). Upgraded `streamlit==1.40.0` to allow `pillow<12` (resolves to 11.3.0 — patches all relevant CVEs). Removed explicit `pillow==12.2.0` pin after discovering it conflicts with all current streamlit versions (`streamlit<1.42` caps pillow at `<12`). Removed explicit `starlette` pin (see Issue 33). All CVE fixes delivered through compatible version upgrades rather than direct pinning.  
-**Commit:** `(current)`
+**Commit:** `aa01864`, `345dade`
 
 ---
 
@@ -322,7 +322,7 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **When:** Every Cloud Build step running `pip install -r requirements.txt`.  
 **Cause:** `google-cloud-aiplatform` and `kfp` both depend on `grpcio-status` but specify loose version ranges. pip's backtracking resolver exhausts many candidate versions before settling. This added 2–3 minutes to each pip install step.  
 **Fix:** Added `grpcio-status==1.62.3` as an explicit pin to `requirements.txt`. Pinning a compatible version gives pip a fixed starting point and eliminates backtracking entirely.  
-**Commit:** `(current)`
+**Commit:** `aa01864`
 
 ---
 
@@ -332,7 +332,7 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **Cause:** `fastapi==0.111.0` declares `starlette>=0.37.2,<0.38.0` — it hard-caps starlette below 0.40.0. Pinning `starlette==0.40.0` directly causes a ResolutionImpossible error. The intended fix (fastapi==0.115.0) also failed verification: `fastapi==0.115.0` requires `starlette<0.39.0,>=0.37.2`, still incompatible. `fastapi==0.115.5` is the first version requiring `starlette>=0.40.0,<0.42.0`.  
 **Fix:** Upgraded `fastapi==0.111.0` → `fastapi==0.115.5`. Removed the explicit `starlette==0.40.0` pin — starlette is a transitive dep of fastapi and is now constrained correctly by fastapi's own requirement (`starlette==0.41.3` resolved). Full dry-run confirmed clean resolution with no conflicts.  
 **Lesson:** Never pin a transitive dependency to a version incompatible with its parent. Always verify the parent package's declared constraint before pinning a transitive dep. If the transitive dep's CVE requires a version the parent can't satisfy, upgrade the parent — not the dep.  
-**Commit:** `(current)`
+**Commit:** `345dade`
 
 ---
 
@@ -352,7 +352,7 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **Cause:** `pipeline-sa` lacked `roles/secretmanager.secretAccessor`. The secret access silently returned an error, leaving `SECRET_KEY` empty. With no API key header, the Cloud Run `/health` call returned 401; `curl -sf` suppressed the error and left `HEALTH_RESP` empty; the downstream `json.load()` then raised `JSONDecodeError: Expecting value` — masking the real cause.  
 **Fix:** Granted `roles/secretmanager.secretAccessor` to `pipeline-sa` at project level (applied immediately). Added to `scripts/01_gcp_setup.sh`. Added `set -euo pipefail` to the smoke test and an explicit `[[ -z "$SECRET_KEY" ]]` guard so the step fails fast with a clear error message rather than cascading into JSON decode failures.  
 **Lesson:** `curl -sf` silently swallows HTTP errors. Always validate that fetched secrets/tokens are non-empty before using them in downstream calls, or use `set -e` so the step fails at the point of failure rather than at a confusing downstream symptom.  
-**Commit:** `(current)`
+**Commit:** `7c22772`
 
 ---
 
@@ -361,4 +361,4 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **When:** Reviewing Step 10 after the Secret Manager fix.  
 **Cause:** The URL was already fetched dynamically via `gcloud run services describe ${_CLOUD_RUN_SERVICE}`. However, the step had no `set -euo pipefail`, so a failed URL lookup (e.g., wrong substitution value) would silently continue with an empty `SVC_URL` and produce a misleading `curl` error.  
 **Fix:** Added `set -euo pipefail` and hardcoded `fraud-detection-api` and `asia-south1` in the describe command (removing indirection through substitution variables in the smoke test itself — substitutions are appropriate for build/deploy steps but add fragility to verification steps).  
-**Commit:** `(current)`
+**Commit:** `7c22772`

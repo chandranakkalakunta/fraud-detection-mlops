@@ -462,7 +462,7 @@ Cloud Build triggered on every push to `main`. 10-step pipeline:
 
 | Step | Name | Blocks on failure |
 |---|---|---|
-| 1 | pytest (82 tests, 15% coverage gate — GCP integration code excluded from unit coverage) | Yes |
+| 1 | pytest (82 tests, 11% coverage gate — GCP integration code excluded from unit coverage) | Yes |
 | 2 | Model performance gate (`AUC-PR ≥ 0.48`) | Yes |
 | 3 | Feature engineering validation (387 features, 0 NaN on 500-row sample) | Yes |
 | 4 | CVE audit (`pip-audit`) | No (warns) |
@@ -473,7 +473,7 @@ Cloud Build triggered on every push to `main`. 10-step pipeline:
 | 9 | Rolling deploy to Cloud Run (`fraud-detection-api`) | Yes |
 | 10 | Smoke test — POST `/predict` + GET `/health` | Yes |
 
-Service account: `cicd-sa` (Cloud Build).  
+Service account: `pipeline-sa` (Cloud Build).  
 Configure GitHub trigger:
 ```bash
 gcloud builds triggers create github \
@@ -481,7 +481,7 @@ gcloud builds triggers create github \
   --repo-owner=chandranakkalakunta \
   --branch-pattern='^main$' \
   --build-config=cloudbuild.yaml \
-  --service-account=projects/PROJECT_ID/serviceAccounts/cicd-sa@PROJECT_ID.iam.gserviceaccount.com
+  --service-account=projects/fraud-detection-mlops-497717/serviceAccounts/pipeline-sa@fraud-detection-mlops-497717.iam.gserviceaccount.com
 ```
 
 ---

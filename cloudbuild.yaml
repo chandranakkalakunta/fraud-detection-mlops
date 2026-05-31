@@ -6,6 +6,7 @@ steps:
     args:
       - -c
       - |
+        apt-get update -qq && apt-get install -y --no-install-recommends libgomp1
         pip install --upgrade pip && pip install -r requirements.txt
         # Coverage threshold set to 11% reflecting actual unit-testable code —
         # GCP-dependent code requires integration testing against live services.
@@ -23,6 +24,7 @@ steps:
     args:
       - -c
       - |
+        apt-get update -qq && apt-get install -y --no-install-recommends libgomp1
         pip install --upgrade pip && pip install -r requirements.txt
         python - <<'PYEOF'
         import io, os, sys, json
@@ -76,6 +78,7 @@ steps:
     args:
       - -c
       - |
+        apt-get update -qq && apt-get install -y --no-install-recommends libgomp1
         pip install --upgrade pip && pip install -r requirements.txt
         python - <<'PYEOF'
         import io, os, sys

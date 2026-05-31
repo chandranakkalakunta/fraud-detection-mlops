@@ -6,10 +6,7 @@ steps:
     args:
       - -c
       - |
-        pip install --quiet pytest pytest-cov pytest-mock \
-          python-json-logger pyyaml scikit-learn numpy pandas \
-          google-cloud-bigquery google-cloud-storage google-cloud-aiplatform \
-          lightgbm xgboost shap joblib
+        pip install --quiet -r requirements.txt
         pytest tests/ -v --cov=src --cov-report=term-missing --cov-fail-under=70
     env:
       - 'GCP_PROJECT_ID=$PROJECT_ID'

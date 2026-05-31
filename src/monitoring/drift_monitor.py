@@ -321,7 +321,6 @@ def setup_model_monitoring(config: dict) -> None:
     skew_configs = {
         feat: model_monitoring.SkewDetectionConfig(
             data_source=training_table,
-            skew_results_gcs_uri=f"gs://{config['storage']['artifacts_bucket']}/monitoring/skew/",
             target_field="isFraud",
         )
         for feat in monitored_feats
@@ -388,7 +387,7 @@ def create_scheduler_job(config: dict, cloud_run_url: str) -> None:
     )
     parent = f"projects/{project}/locations/{location}"
     created = client.create_job(parent=parent, job=job)
-    logger.info("scheduler_job_created", extra={"name": created.name, "schedule": monitoring_cfg["scheduler_schedule"]})
+    logger.info("scheduler_job_created", extra={"job_name": created.name, "schedule": monitoring_cfg["scheduler_schedule"]})
 
 
 def create_alert_policies(config: dict) -> None:

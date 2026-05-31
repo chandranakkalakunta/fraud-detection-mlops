@@ -241,6 +241,19 @@ async def predict(
     model = _load_model_from_gcs()
 
     raw_df = pd.DataFrame([raw_dict])
+
+    # Ensure all columns the transformer was fitted on are present (missing → NaN).
+    # This covers V1-V339, identity columns, and target-encoding columns not
+    # included in the minimal API request schema.
+    expected_cols = (
+        list(getattr(transformer, "_v_cols_present", []))
+        + list(getattr(transformer, "_passthrough_medians", pd.Series()).index)
+        + list(getattr(transformer, "target_encode_cols", []))
+    )
+    for col in expected_cols:
+        if col not in raw_df.columns:
+            raw_df[col] = np.nan
+
     processed = transformer.transform(raw_df).select_dtypes(include=[np.number])
     feature_names = processed.columns.tolist()
     feature_arr = processed.values

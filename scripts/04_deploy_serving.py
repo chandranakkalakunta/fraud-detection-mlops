@@ -98,35 +98,71 @@ def step3_save_baseline(config: dict) -> None:
 
 def step4_create_api_key_secret(config: dict) -> None:
     from google.cloud import secretmanager
+    from google.iam.v1 import policy_pb2
 
     project = config["gcp"]["project_id"]
     secret_id = config["serving"]["api_key_secret"]
     client = secretmanager.SecretManagerServiceClient()
     parent = f"projects/{project}"
     secret_name = f"{parent}/secrets/{secret_id}"
+    serving_sa = f"serviceAccount:serving-sa@{project}.iam.gserviceaccount.com"
 
-    # Create secret if absent.
+    created = False
     try:
         client.get_secret(name=secret_name)
         logger.info("secret_exists", extra={"secret": secret_id})
         print(f"✓ api-key secret already exists: {secret_id}")
-        return
     except Exception:
-        pass
+        client.create_secret(
+            parent=parent,
+            secret_id=secret_id,
+            secret={"replication": {"user_managed": {"replicas": [{"location": config["gcp"]["region"]}]}}},
+        )
+        api_key = secrets.token_urlsafe(32)
+        client.add_secret_version(
+            parent=secret_name,
+            payload={"data": api_key.encode()},
+        )
+        print(f"✓ api-key secret created: {secret_id}")
+        print(f"  API key value (save this): {api_key}")
+        logger.info("api_key_secret_created", extra={"secret": secret_id})
+        created = True
 
-    client.create_secret(
-        parent=parent,
-        secret_id=secret_id,
-        secret={"replication": {"user_managed": {"replicas": [{"location": config["gcp"]["region"]}]}}},
+    # Ensure serving SA can read the secret (idempotent).
+    policy = client.get_iam_policy(request={"resource": secret_name})
+    accessor_role = "roles/secretmanager.secretAccessor"
+    for binding in policy.bindings:
+        if binding.role == accessor_role and serving_sa in binding.members:
+            print(f"✓ serving SA already has {accessor_role}")
+            return
+    policy.bindings.add(role=accessor_role, members=[serving_sa])
+    client.set_iam_policy(request={"resource": secret_name, "policy": policy})
+    print(f"✓ granted {accessor_role} to serving SA on {secret_id}")
+    logger.info("secret_iam_granted", extra={"secret": secret_id, "member": serving_sa})
+
+
+def step4b_grant_vertex_gcs_access(config: dict) -> None:
+    """Grant Vertex AI default SA read access on the artifacts bucket."""
+    import subprocess
+
+    project = config["gcp"]["project_id"]
+    # Vertex AI default SA pattern: service-PROJECT_NUMBER@gcp-sa-aiplatform.iam.gserviceaccount.com
+    # Get project number
+    result = subprocess.run(
+        ["gcloud", "projects", "describe", project, "--format=value(projectNumber)"],
+        capture_output=True, text=True, check=True
     )
-    api_key = secrets.token_urlsafe(32)
-    client.add_secret_version(
-        parent=secret_name,
-        payload={"data": api_key.encode()},
-    )
-    print(f"✓ api-key secret created: {secret_id}")
-    print(f"  API key value (save this): {api_key}")
-    logger.info("api_key_secret_created", extra={"secret": secret_id})
+    project_number = result.stdout.strip()
+    vertex_sa = f"service-{project_number}@gcp-sa-aiplatform.iam.gserviceaccount.com"
+    bucket = config["storage"]["artifacts_bucket"]
+
+    for role in ["objectViewer", "legacyBucketReader"]:
+        subprocess.run(
+            ["gsutil", "iam", "ch", f"serviceAccount:{vertex_sa}:{role}", f"gs://{bucket}"],
+            capture_output=True, check=False  # idempotent, ignore if already granted
+        )
+    print(f"✓ granted storage read to {vertex_sa} on gs://{bucket}")
+    logger.info("vertex_sa_gcs_access_granted", extra={"sa": vertex_sa, "bucket": bucket})
 
 
 def step5_deploy_endpoint(config: dict) -> str:
@@ -158,6 +194,9 @@ def main() -> None:
 
     print("\nStep 4/5 — Create API key in Secret Manager")
     step4_create_api_key_secret(config)
+
+    print("\nStep 4b/5 — Grant Vertex AI SA GCS read access")
+    step4b_grant_vertex_gcs_access(config)
 
     print("\nStep 5/5 — Deploy model to Vertex AI Endpoint")
     endpoint_resource = step5_deploy_endpoint(config)

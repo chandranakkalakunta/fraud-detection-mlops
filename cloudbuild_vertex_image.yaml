@@ -1,0 +1,21 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args:
+    - build
+    - --platform
+    - linux/amd64
+    - -f
+    - Dockerfile.vertex
+    - -t
+    - '${_IMAGE}'
+    - .
+
+images:
+  - '${_IMAGE}'
+
+substitutions:
+  _IMAGE: 'asia-south1-docker.pkg.dev/fraud-detection-mlops-497717/fraud-detection-repo/fraud-lgb-serving:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8

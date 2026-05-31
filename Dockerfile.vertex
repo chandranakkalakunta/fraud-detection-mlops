@@ -1,0 +1,26 @@
+# Minimal Vertex AI serving container for lgb-v8-no-txnid (Platt-calibrated).
+# Implements Vertex AI prediction protocol:
+#   GET  /health  → {"status": "healthy"}
+#   POST /predict → {"instances": [[f1,f2,...], ...]}
+#              ← {"predictions": [prob1, prob2, ...]}
+#
+# Model loaded from AIP_STORAGE_URI (injected by Vertex AI at runtime).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    flask==3.0.3 \
+    gunicorn==22.0.0 \
+    joblib==1.4.2 \
+    numpy==1.26.4 \
+    lightgbm==4.6.0 \
+    scikit-learn==1.4.2 \
+    google-cloud-storage==2.17.0
+
+COPY src/serving/vertex_predictor.py .
+
+ENV AIP_HTTP_PORT=8080
+EXPOSE 8080
+
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "120", "vertex_predictor:app"]

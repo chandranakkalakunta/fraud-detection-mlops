@@ -35,10 +35,14 @@ def step1_vertex_model_monitoring(config: dict) -> None:
         print("  Set it in .env after running 04_deploy_serving.py, then re-run this script.")
         return
 
-    from src.monitoring.drift_monitor import setup_model_monitoring
-    print("Enabling Vertex AI Model Monitoring…")
-    setup_model_monitoring(config)
-    print("✓ Model monitoring enabled")
+    try:
+        from src.monitoring.drift_monitor import setup_model_monitoring
+        print("Enabling Vertex AI Model Monitoring…")
+        setup_model_monitoring(config)
+        print("✓ Model monitoring enabled")
+    except Exception as exc:
+        print(f"⚠ Vertex AI Model Monitoring skipped: {exc}")
+        print("  This is expected if the endpoint has no deployed model yet.")
 
 
 def step2_cloud_scheduler(config: dict) -> None:
@@ -55,12 +59,17 @@ def step2_cloud_scheduler(config: dict) -> None:
 
 
 def step3_alert_policies(config: dict) -> None:
-    from src.monitoring.drift_monitor import create_alert_policies
-    print("Creating Cloud Monitoring alert policies…")
-    create_alert_policies(config)
-    print(f"✓ Alert policy: {config['monitoring']['feature_drift_alert_policy']}")
-    print(f"✓ Alert policy: {config['monitoring']['performance_drift_alert_policy']}")
-    print(f"  Notifications → {config['monitoring']['alert_email']}")
+    try:
+        from src.monitoring.drift_monitor import create_alert_policies
+        print("Creating Cloud Monitoring alert policies…")
+        create_alert_policies(config)
+        print(f"✓ Alert policy: {config['monitoring']['feature_drift_alert_policy']}")
+        print(f"✓ Alert policy: {config['monitoring']['performance_drift_alert_policy']}")
+        print(f"  Notifications → {config['monitoring']['alert_email']}")
+    except Exception as exc:
+        print(f"⚠ Alert policy creation deferred: {exc}")
+        print("  Custom metrics are created on first drift check run.")
+        print("  Re-run this script after the first drift check completes.")
 
 
 def main() -> None:

@@ -193,15 +193,15 @@ steps:
     args:
       - -c
       - |
-        IMAGE="${_AR_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/fraud-detection:$SHORT_SHA"
+        SCAN_IMAGE=$$(echo "${_AR_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/fraud-detection:$SHORT_SHA")
         echo "Waiting for vulnerability scan to complete…"
         sleep 30
-        CRITICAL=$(gcloud artifacts docker images list-vulnerabilities "$IMAGE" \
+        CRITICAL_COUNT=$$(gcloud artifacts docker images list-vulnerabilities "$$SCAN_IMAGE" \
           --format="value(vulnerability.effectiveSeverity)" 2>/dev/null \
-          | grep -c "^CRITICAL$" || true)
-        echo "Critical CVEs found: $CRITICAL"
-        if [ "$CRITICAL" -gt 0 ]; then
-          echo "FAIL: $CRITICAL CRITICAL CVEs — blocking deployment"
+          | grep -c "^CRITICAL$$" || true)
+        echo "Critical CVEs found: $$CRITICAL_COUNT"
+        if [ "$$CRITICAL_COUNT" -gt 0 ]; then
+          echo "FAIL: $$CRITICAL_COUNT CRITICAL CVEs — blocking deployment"
           exit 1
         fi
         echo "PASS: No CRITICAL CVEs"
@@ -232,7 +232,7 @@ steps:
       - --port
       - '8080'
       - --set-env-vars
-      - 'ENV=dev,GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_GCP_REGION}'
+      - 'ENV=dev,GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_GCP_REGION},GCS_ARTIFACTS_BUCKET=${_ARTIFACTS_BUCKET},BQ_DATASET=fraud_detection,BQ_LOCATION=${_GCP_REGION},API_KEY_SECRET_NAME=fraud-api-key,SERVING_TRANSFORMER_GCS_URI=gs://${_ARTIFACTS_BUCKET}/transformers/feature_engineer.joblib,PREDICTION_LOG_BQ_TABLE=prediction_logs,DRIFT_LOG_BQ_TABLE=drift_logs,CLOUD_RUN_SERVICE_NAME=${_CLOUD_RUN_SERVICE},SERVING_CALIBRATED_THRESHOLD=0.2458,FEATURE_DRIFT_ALERT_POLICY=feature-drift-alert,PERFORMANCE_DRIFT_ALERT_POLICY=performance-drift-alert,ALERT_EMAIL=${_ALERT_EMAIL}'
       - --no-allow-unauthenticated
       - --quiet
 
@@ -244,36 +244,36 @@ steps:
     args:
       - -c
       - |
-        SERVICE_URL=$(gcloud run services describe ${_CLOUD_RUN_SERVICE} \
+        SVC_URL=$$(gcloud run services describe ${_CLOUD_RUN_SERVICE} \
           --region ${_GCP_REGION} --format="value(status.url)")
-        echo "Cloud Run URL: $SERVICE_URL"
+        echo "Cloud Run URL: $$SVC_URL"
 
         # Fetch identity token for authenticated Cloud Run
-        TOKEN=$(gcloud auth print-identity-token)
-        API_KEY=$(gcloud secrets versions access latest \
+        ID_TOKEN=$$(gcloud auth print-identity-token)
+        SECRET_KEY=$$(gcloud secrets versions access latest \
           --secret="${_API_KEY_SECRET}" --project="$PROJECT_ID")
 
         # Health check
-        HEALTH=$(curl -sf -H "Authorization: Bearer $TOKEN" \
-          -H "X-API-Key: $API_KEY" "$SERVICE_URL/health")
-        echo "Health: $HEALTH"
-        echo "$HEALTH" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['status']=='healthy', 'health check failed'"
+        HEALTH_RESP=$$(curl -sf -H "Authorization: Bearer $$ID_TOKEN" \
+          -H "X-API-Key: $$SECRET_KEY" "$$SVC_URL/health")
+        echo "Health: $$HEALTH_RESP"
+        echo "$$HEALTH_RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['status']=='healthy', 'health check failed'"
 
         # Predict smoke test
-        PREDICT=$(curl -sf -X POST \
-          -H "Authorization: Bearer $TOKEN" \
-          -H "X-API-Key: $API_KEY" \
+        PRED_RESP=$$(curl -sf -X POST \
+          -H "Authorization: Bearer $$ID_TOKEN" \
+          -H "X-API-Key: $$SECRET_KEY" \
           -H "Content-Type: application/json" \
           -d '{"TransactionAmt": 68.5, "TransactionDT": 86400.0}' \
-          "$SERVICE_URL/predict")
-        echo "Predict: $PREDICT"
-        echo "$PREDICT" | python3 -c "
+          "$$SVC_URL/predict")
+        echo "Predict: $$PRED_RESP"
+        echo "$$PRED_RESP" | python3 -c "
         import json, sys
         d = json.load(sys.stdin)
         assert 'fraud_probability' in d, 'missing fraud_probability'
         assert 0.0 <= d['fraud_probability'] <= 1.0, 'probability out of range'
         assert 'model_version' in d, 'missing model_version'
-        print(f'SMOKE TEST PASSED — fraud_probability={d[\"fraud_probability\"]:.4f}')
+        print('SMOKE TEST PASSED — fraud_probability=' + str(round(d['fraud_probability'],4)))
         "
 
 substitutions:
@@ -284,6 +284,7 @@ substitutions:
   _CLOUD_RUN_SERVICE: fraud-detection-api
   _SERVING_SA: serving-sa@fraud-detection-mlops-497717.iam.gserviceaccount.com
   _API_KEY_SECRET: fraud-api-key
+  _ALERT_EMAIL: chandra.nakkalakunta@gmail.com
 
 options:
   logging: CLOUD_LOGGING_ONLY

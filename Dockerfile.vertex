@@ -7,6 +7,11 @@
 # Model loaded from AIP_STORAGE_URI (injected by Vertex AI at runtime).
 FROM python:3.11-slim
 
+# libgomp1 required by LightGBM at runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 RUN pip install --no-cache-dir \

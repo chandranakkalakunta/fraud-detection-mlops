@@ -84,6 +84,16 @@ setup-monitoring: ## Cloud Scheduler, Vertex Model Monitoring, alert policies
 	@test -n "$$GCP_PROJECT_ID" || (echo "ERROR: GCP_PROJECT_ID not set"; exit 1)
 	ENV=$(ENV) python scripts/05_setup_monitoring.py
 
+deploy-api: ## Build + deploy Cloud Run API via Cloud Build
+	gcloud builds submit . --config=cloudbuild_api_deploy.yaml \
+		--project=$(GCP_PROJECT_ID) \
+		--gcs-source-staging-dir=gs://$(GCS_ARTIFACTS_BUCKET)/cloudbuild-staging
+
+deploy-streamlit: ## Build + deploy Streamlit demo via Cloud Build
+	gcloud builds submit . --config=cloudbuild_streamlit_deploy.yaml \
+		--project=$(GCP_PROJECT_ID) \
+		--gcs-source-staging-dir=gs://$(GCS_ARTIFACTS_BUCKET)/cloudbuild-staging
+
 api: ## Run FastAPI server locally (port 8080)
 	@test -n "$$GCP_PROJECT_ID" || (echo "ERROR: GCP_PROJECT_ID not set"; exit 1)
 	ENV=$(ENV) uvicorn src.serving.api:app --host 0.0.0.0 --port 8080 --reload

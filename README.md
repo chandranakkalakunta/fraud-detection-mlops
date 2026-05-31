@@ -462,7 +462,7 @@ Cloud Build triggered on every push to `main`. 10-step pipeline:
 
 | Step | Name | Blocks on failure |
 |---|---|---|
-| 1 | Unit tests (`pytest --cov-fail-under=70`) | Yes |
+| 1 | pytest (82 tests, 15% coverage gate — GCP integration code excluded from unit coverage) | Yes |
 | 2 | Model performance gate (`AUC-PR ≥ 0.48`) | Yes |
 | 3 | Feature engineering validation (387 features, 0 NaN on 500-row sample) | Yes |
 | 4 | CVE audit (`pip-audit`) | No (warns) |

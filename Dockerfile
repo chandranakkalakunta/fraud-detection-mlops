@@ -32,7 +32,7 @@ COPY --chown=appuser:appgroup config/ ./config/
 COPY --chown=appuser:appgroup scripts/ ./scripts/
 COPY --chown=appuser:appgroup pipelines/ ./pipelines/
 
-ENV PATH="/home/appuser/.local/bin:${PATH}" \
+ENV PATH="/home/appuser/.local/bin:/root/.local/bin:${PATH}" \
     PYTHONPATH="/app" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

@@ -243,27 +243,31 @@ steps:
     args:
       - -c
       - |
+        # Get deployed service URL dynamically — never hardcode
         SVC_URL=$$(gcloud run services describe ${_CLOUD_RUN_SERVICE} \
-          --region ${_GCP_REGION} --format="value(status.url)")
+          --region=${_GCP_REGION} --project="$PROJECT_ID" \
+          --format="value(status.url)")
         echo "Cloud Run URL: $$SVC_URL"
 
-        # Fetch identity token for authenticated Cloud Run
-        ID_TOKEN=$$(gcloud auth print-identity-token)
+        # Identity token scoped to the service URL (requires iam.serviceAccountTokenCreator)
+        ID_TOKEN=$$(gcloud auth print-identity-token --audiences="$$SVC_URL")
         SECRET_KEY=$$(gcloud secrets versions access latest \
           --secret="${_API_KEY_SECRET}" --project="$PROJECT_ID")
 
         # Health check
-        HEALTH_RESP=$$(curl -sf -H "Authorization: Bearer $$ID_TOKEN" \
-          -H "X-API-Key: $$SECRET_KEY" "$$SVC_URL/health")
+        HEALTH_RESP=$$(curl -sf \
+          --header "Authorization: Bearer $$ID_TOKEN" \
+          --header "X-API-Key: $$SECRET_KEY" \
+          "$$SVC_URL/health")
         echo "Health: $$HEALTH_RESP"
         echo "$$HEALTH_RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['status']=='healthy', 'health check failed'"
 
         # Predict smoke test
         PRED_RESP=$$(curl -sf -X POST \
-          -H "Authorization: Bearer $$ID_TOKEN" \
-          -H "X-API-Key: $$SECRET_KEY" \
-          -H "Content-Type: application/json" \
-          -d '{"TransactionAmt": 68.5, "TransactionDT": 86400.0}' \
+          --header "Authorization: Bearer $$ID_TOKEN" \
+          --header "X-API-Key: $$SECRET_KEY" \
+          --header "Content-Type: application/json" \
+          --data '{"TransactionAmt": 68.5, "TransactionDT": 86400.0}' \
           "$$SVC_URL/predict")
         echo "Predict: $$PRED_RESP"
         echo "$$PRED_RESP" | python3 -c "

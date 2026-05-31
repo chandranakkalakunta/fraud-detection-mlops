@@ -170,6 +170,7 @@ bind "${PIPE_EMAIL}" "roles/iam.serviceAccountUser"
 bind "${PIPE_EMAIL}" "roles/logging.logWriter"
 bind "${PIPE_EMAIL}" "roles/artifactregistry.writer"
 bind "${PIPE_EMAIL}" "roles/run.admin"
+bind "${PIPE_EMAIL}" "roles/iam.serviceAccountTokenCreator"
 
 # Pipeline SA needs to act as serving-sa when deploying Cloud Run with --service-account
 gcloud iam service-accounts add-iam-policy-binding "${SERVING_SA}" \

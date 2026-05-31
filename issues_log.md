@@ -273,3 +273,53 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **Fix:** Added `apt-get update -qq && apt-get install -y --no-install-recommends libgomp1` as the first line of every Cloud Build step that loads LightGBM or XGBoost: `unit-tests`, `model-gate`, and `feature-validation`. Tool-only steps (`cve-audit`, `sast`, `secret-scan`) were left unchanged. Kept `python:3.11-slim` to avoid the ~900 MB overhead of the full image.  
 **Lesson:** `libgomp1` is a recurring gap whenever a slim Python image is used with LightGBM or XGBoost. Treat it as a standard preamble in any `python:3.11-slim`-based step or Dockerfile that loads either library.  
 **Commit:** `c842461`
+
+---
+
+## 28. Cloud Build Step 10 smoke test fails — `pipeline-sa` cannot generate identity token
+
+**When:** Cloud Build smoke-test step — `gcloud auth print-identity-token --audiences=...`.  
+**Cause:** Cloud Run requires OIDC identity tokens for authenticated requests. Generating an identity token requires `roles/iam.serviceAccountTokenCreator` on the calling identity. `pipeline-sa` had `roles/iam.serviceAccountUser` (impersonate other SAs) but not `serviceAccountTokenCreator` (mint OIDC tokens for itself). The two roles are distinct: `serviceAccountUser` allows acting-as a SA; `serviceAccountTokenCreator` allows minting tokens.  
+**Fix:** Added `roles/iam.serviceAccountTokenCreator` to `pipeline-sa` in `scripts/01_gcp_setup.sh`. Applied immediately via `gcloud`. Also scoped the identity token to the service audience (`--audiences=$$SVC_URL`) and added `--project` to the `gcloud run services describe` call to prevent project resolution failures.  
+**Commit:** `(current)`
+
+---
+
+## 29. Cloud Build smoke test — URL fetched without `--project` flag
+
+**When:** Cloud Build smoke-test step — `gcloud run services describe`.  
+**Cause:** `gcloud run services describe` was called without `--project="$PROJECT_ID"`. In Cloud Build, the active project is `$PROJECT_ID` but relying on implicit project resolution is fragile — if the build SA's default config differs, the describe call returns the wrong URL or errors out.  
+**Fix:** Added `--project="$PROJECT_ID"` to the `gcloud run services describe` call. Also converted all curl `-H` flags to `--header` for consistency with the canonical GCP documentation style.  
+**Commit:** `(current)`
+
+---
+
+## 30. Dockerfile PATH missing `/root/.local/bin` — pip scripts not callable
+
+**When:** Cloud Run container startup — `uvicorn` or other pip-installed scripts not found in certain execution contexts.  
+**Cause:** Multi-stage build installs packages with `pip install --user` in the builder stage (runs as root → installs to `/root/.local`). Runtime stage copies to `/home/appuser/.local` and sets `PATH="/home/appuser/.local/bin:..."`. When a process runs as root (e.g., container health check probes, or a layer that hasn't switched to `appuser` yet), `/root/.local/bin` is not in PATH and scripts are not found.  
+**Fix:** Extended PATH to include both locations: `PATH="/home/appuser/.local/bin:/root/.local/bin:${PATH}"`.  
+**Commit:** `(current)`
+
+---
+
+## 31. CVE audit flags critical vulnerabilities in pinned dependencies
+
+**When:** Cloud Build CVE audit step (`pip-audit -r requirements.txt`).  
+**Affected packages:**  
+- `pillow` (unpinned transitive dep) — multiple image parsing CVEs; patched in 12.2.0  
+- `starlette==0.37.2` (fastapi transitive dep) — HTTP header injection CVE; patched in 0.40.0  
+- `streamlit==1.35.0` — CVE in bundled frontend assets; patched in 1.37.0  
+- `urllib3` — CVE patched in 2.x, but `kfp==2.7.0` requires `urllib3<2.0.0`; pinned at 1.26.20 with a comment explaining the constraint  
+
+**Fix:** Explicitly pinned all four packages: `pillow==12.2.0`, `starlette==0.40.0`, `streamlit==1.37.0`, `urllib3==1.26.20` (with `# CVE-pinned` comment). Explicit pins override transitive resolution and ensure the patched version is always installed.  
+**Commit:** `(current)`
+
+---
+
+## 32. pip resolver backtracks through 20+ `grpcio-status` versions — slow CI builds
+
+**When:** Every Cloud Build step running `pip install -r requirements.txt`.  
+**Cause:** `google-cloud-aiplatform` and `kfp` both depend on `grpcio-status` but specify loose version ranges. pip's backtracking resolver exhausts many candidate versions before settling. This added 2–3 minutes to each pip install step.  
+**Fix:** Added `grpcio-status==1.62.3` as an explicit pin to `requirements.txt`. Pinning a compatible version gives pip a fixed starting point and eliminates backtracking entirely.  
+**Commit:** `(current)`

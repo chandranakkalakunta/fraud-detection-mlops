@@ -6,7 +6,7 @@ steps:
     args:
       - -c
       - |
-        pip install --quiet -r requirements.txt
+        pip install --upgrade pip && pip install -r requirements.txt
         pytest tests/ -v --cov=src --cov-report=term-missing --cov-fail-under=70
     env:
       - 'GCP_PROJECT_ID=$PROJECT_ID'
@@ -21,9 +21,7 @@ steps:
     args:
       - -c
       - |
-        pip install --quiet google-cloud-storage google-cloud-bigquery \
-          lightgbm scikit-learn numpy pandas joblib shap \
-          python-json-logger pyyaml
+        pip install --upgrade pip && pip install -r requirements.txt
         python - <<'PYEOF'
         import io, os, sys, json
         from google.cloud import storage as gcs
@@ -76,8 +74,7 @@ steps:
     args:
       - -c
       - |
-        pip install --quiet lightgbm scikit-learn numpy pandas joblib \
-          python-json-logger pyyaml google-cloud-storage
+        pip install --upgrade pip && pip install -r requirements.txt
         python - <<'PYEOF'
         import io, os, sys
         import numpy as np

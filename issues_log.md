@@ -229,3 +229,17 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **Diagnosis:** SHAP `TreeExplainer` on full 147k test set. TransactionID ranked above `card2`, `V91`, and `C1` — all legitimate features. Its rank 7 position was suspicious for a row identifier.  
 **Fix:** Added `EXCLUDED_FEATURES = ["TransactionID"]` at module level in `src/features/engineer.py`. The `transform()` method drops all columns in `EXCLUDED_FEATURES` at the top of processing, before any imputation or feature creation, so the leakage cannot re-enter via any code path. Retrained as `lgb-v8-no-txnid` (387 features). AUC-PR: 0.5393 → 0.5263 (delta −0.013). Since |delta| < 0.02, TransactionID was marginal — the model's core signal is clean. `lgb-v7-tuned` demoted to staging; `lgb-v8-no-txnid` registered as production-ready.  
 **Commit:** `64d277c`
+
+---
+
+## Phase 4 — Serving, Monitoring & CI/CD
+
+---
+
+## 24. `pipeline-sa` missing Cloud Build execution permissions
+
+**When:** First CI/CD trigger run via Cloud Build using `pipeline-sa` as the build service account.  
+**Cause:** `scripts/01_gcp_setup.sh` created `pipeline-sa` with application-level Vertex AI Pipelines permissions only (`aiplatform.user`, `storage.objectAdmin`, `bigquery.*`, `iam.serviceAccountUser`). CI/CD execution requires five additional bindings that the script never provisioned: `logging.logWriter` (write Cloud Build step logs to Cloud Logging), `storage.objectAdmin` at project level (already present but not for build artifacts specifically), `artifactregistry.writer` (push Docker images to Artifact Registry), `run.admin` (deploy and update Cloud Run services), and `iam.serviceAccountUser` on `serving-sa` specifically (required when deploying Cloud Run with `--service-account=serving-sa@...` — the deploying identity must be able to impersonate the runtime SA).  
+**Fix:** Added all five bindings to the `pipeline-sa` section of `scripts/01_gcp_setup.sh`. Also added `cloudscheduler.googleapis.com` to the API enable list, which had been enabled manually during Phase 4 setup but was missing from the script. Applied the bindings immediately via `gcloud` to unblock the current trigger.  
+**Lesson:** Infrastructure setup scripts tend to be written per-service (training permissions, serving permissions, monitoring permissions) and miss cross-service orchestration requirements. CI/CD service accounts touch every layer — build, registry, deploy, runtime SA impersonation — and their permissions must be verified end-to-end, not derived from any single service's needs. Always include a dedicated CI/CD SA section in the initial setup script that covers the full deployment chain.  
+**Commit:** `4cce897`

@@ -313,18 +313,29 @@ def setup_model_monitoring(config: dict) -> None:
         logger.warning("model_monitoring_skipped_no_endpoint")
         return
 
+    # Idempotent: skip if a monitoring job already exists for this endpoint.
+    existing = aip.ModelDeploymentMonitoringJob.list(project=project, location=location)
+    for j in existing:
+        if j.display_name == "fraud-model-monitoring":
+            logger.info("model_monitoring_already_exists", extra={"job": j.resource_name})
+            print(f"  (monitoring job already exists: {j.resource_name})")
+            return
+
     endpoint = aip.Endpoint(resource_name)
     training_table = f"bq://{project}.{dataset}.transactions_joined"
     alert_email = config["monitoring"]["alert_email"]
     monitored_feats = config["monitoring"]["monitored_features"]
 
-    skew_configs = {
-        feat: model_monitoring.SkewDetectionConfig(
-            data_source=training_table,
-            target_field="isFraud",
-        )
-        for feat in monitored_feats
-    }
+    # objective_configs must be a dict keyed by deployed model ID.
+    # Fetch the deployed model ID from the live endpoint.
+    deployed_model_id = endpoint.gca_resource.traffic_split and list(endpoint.gca_resource.traffic_split.keys())[0]
+    if not deployed_model_id:
+        raise ValueError("No deployed model found on endpoint — deploy a model first")
+
+    skew_detection = model_monitoring.SkewDetectionConfig(
+        data_source=training_table,
+        target_field="isFraud",
+    )
 
     job = aip.ModelDeploymentMonitoringJob.create(
         display_name="fraud-model-monitoring",
@@ -332,12 +343,11 @@ def setup_model_monitoring(config: dict) -> None:
         logging_sampling_strategy=model_monitoring.RandomSampleConfig(sample_rate=0.1),
         schedule_config=model_monitoring.ScheduleConfig(monitor_interval=24),
         alert_config=model_monitoring.EmailAlertConfig(user_emails=[alert_email]),
-        objective_configs=[
-            model_monitoring.ObjectiveConfig(
-                skew_detection_config=skew_configs[feat],
+        objective_configs={
+            deployed_model_id: model_monitoring.ObjectiveConfig(
+                skew_detection_config=skew_detection,
             )
-            for feat in monitored_feats
-        ],
+        },
         project=project,
         location=location,
     )

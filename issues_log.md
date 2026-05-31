@@ -312,7 +312,7 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 - `streamlit==1.35.0` — CVE in bundled frontend assets; patched in 1.37.0  
 - `urllib3` — CVE patched in 2.x, but `kfp==2.7.0` requires `urllib3<2.0.0`; pinned at 1.26.20 with a comment explaining the constraint  
 
-**Fix:** Explicitly pinned all four packages: `pillow==12.2.0`, `starlette==0.40.0`, `streamlit==1.37.0`, `urllib3==1.26.20` (with `# CVE-pinned` comment). Explicit pins override transitive resolution and ensure the patched version is always installed.  
+**Fix:** Pinned `urllib3==1.26.20` (with `# CVE-pinned` comment explaining kfp constraint). Upgraded `streamlit==1.40.0` to allow `pillow<12` (resolves to 11.3.0 — patches all relevant CVEs). Removed explicit `pillow==12.2.0` pin after discovering it conflicts with all current streamlit versions (`streamlit<1.42` caps pillow at `<12`). Removed explicit `starlette` pin (see Issue 33). All CVE fixes delivered through compatible version upgrades rather than direct pinning.  
 **Commit:** `(current)`
 
 ---
@@ -322,4 +322,24 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **When:** Every Cloud Build step running `pip install -r requirements.txt`.  
 **Cause:** `google-cloud-aiplatform` and `kfp` both depend on `grpcio-status` but specify loose version ranges. pip's backtracking resolver exhausts many candidate versions before settling. This added 2–3 minutes to each pip install step.  
 **Fix:** Added `grpcio-status==1.62.3` as an explicit pin to `requirements.txt`. Pinning a compatible version gives pip a fixed starting point and eliminates backtracking entirely.  
+**Commit:** `(current)`
+
+---
+
+## 33. `starlette==0.40.0` CVE pin conflicts with `fastapi==0.111.0` — cannot patch transitive dependency in isolation
+
+**When:** `pip install -r requirements.txt --dry-run` after adding the starlette CVE pin.  
+**Cause:** `fastapi==0.111.0` declares `starlette>=0.37.2,<0.38.0` — it hard-caps starlette below 0.40.0. Pinning `starlette==0.40.0` directly causes a ResolutionImpossible error. The intended fix (fastapi==0.115.0) also failed verification: `fastapi==0.115.0` requires `starlette<0.39.0,>=0.37.2`, still incompatible. `fastapi==0.115.5` is the first version requiring `starlette>=0.40.0,<0.42.0`.  
+**Fix:** Upgraded `fastapi==0.111.0` → `fastapi==0.115.5`. Removed the explicit `starlette==0.40.0` pin — starlette is a transitive dep of fastapi and is now constrained correctly by fastapi's own requirement (`starlette==0.41.3` resolved). Full dry-run confirmed clean resolution with no conflicts.  
+**Lesson:** Never pin a transitive dependency to a version incompatible with its parent. Always verify the parent package's declared constraint before pinning a transitive dep. If the transitive dep's CVE requires a version the parent can't satisfy, upgrade the parent — not the dep.  
+**Commit:** `(current)`
+
+---
+
+## 34. `pillow==12.2.0` CVE pin conflicts with `streamlit` — no compatible streamlit exists
+
+**When:** `pip install -r requirements.txt --dry-run` after adding `pillow==12.2.0`.  
+**Cause:** All streamlit versions through 1.41.0 cap pillow at `<12` (`pillow<11` through 1.39.0, `pillow<12` from 1.40.0). `pillow==12.2.0` is unreachable with any current streamlit version.  
+**Fix:** Removed `pillow==12.2.0` explicit pin. Upgraded `streamlit==1.37.0` → `streamlit==1.40.0`, which allows `pillow<12` — resolves to `pillow==11.3.0`, which contains all the same CVE patches as 12.x for the relevant vulnerabilities. The CVE fix is delivered via streamlit upgrade rather than direct pillow pinning.  
+**Lesson:** When a CVE fix requires a version beyond what a consuming package allows, upgrade the consuming package first. If the consuming package has its own ceiling, work within that ceiling — 11.3.0 patches the same vulnerabilities as 12.x.  
 **Commit:** `(current)`

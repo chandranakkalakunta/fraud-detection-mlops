@@ -245,23 +245,16 @@ steps:
       - |
         set -euo pipefail
 
-        # Fetch deployed service URL dynamically — never hardcode
-        SVC_URL=$$(gcloud run services describe fraud-detection-api \
-          --region=asia-south1 --project="$PROJECT_ID" \
-          --format="value(status.url)")
+        SVC_URL="https://fraud-detection-api-65768314585.asia-south1.run.app"
         echo "Cloud Run URL: $$SVC_URL"
 
-        # Identity token scoped to the service URL (requires iam.serviceAccountTokenCreator)
-        ID_TOKEN=$$(gcloud auth print-identity-token --audiences="$$SVC_URL")
-
-        # Fetch API key — requires secretmanager.secretAccessor on pipeline-sa
+        # Fetch API key from Secret Manager — allUsers has run.invoker so no identity token needed
         SECRET_KEY=$$(gcloud secrets versions access latest \
           --secret="${_API_KEY_SECRET}" --project="$PROJECT_ID")
         [[ -z "$$SECRET_KEY" ]] && { echo "ERROR: SECRET_KEY is empty — check Secret Manager IAM"; exit 1; }
 
         # Health check
         HEALTH_RESP=$$(curl -sf \
-          --header "Authorization: Bearer $$ID_TOKEN" \
           --header "X-API-Key: $$SECRET_KEY" \
           "$$SVC_URL/health")
         echo "Health: $$HEALTH_RESP"
@@ -269,7 +262,6 @@ steps:
 
         # Predict smoke test
         PRED_RESP=$$(curl -sf -X POST \
-          --header "Authorization: Bearer $$ID_TOKEN" \
           --header "X-API-Key: $$SECRET_KEY" \
           --header "Content-Type: application/json" \
           --data '{"TransactionAmt": 68.5, "TransactionDT": 86400.0}' \

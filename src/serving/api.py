@@ -14,6 +14,7 @@ Deploy:  Cloud Run, min_instances=1, max_instances=5, memory=2Gi, serving-sa.
 import io
 import os
 import time
+import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -284,7 +285,7 @@ async def predict(
         logger.warning("shap_per_prediction_failed", extra={"error": str(exc)})
 
     latency_ms = (time.monotonic() - t0) * 1000
-    import uuid as _uuid
+    request_id = request.headers.get("X-Request-ID") or str(_uuid.uuid4())
     prediction_id = str(_uuid.uuid4())
 
     # Log metadata to BigQuery (no PII, no feature values)
@@ -309,6 +310,7 @@ async def predict(
     logger.info(
         "predict",
         extra={
+            "request_id": request_id,
             "prediction_id": prediction_id,
             "fraud_probability": round(fraud_prob, 4),
             "prediction": binary_pred,

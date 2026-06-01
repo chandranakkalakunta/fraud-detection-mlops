@@ -256,6 +256,22 @@ async def predict(
             raw_df[col] = np.nan
 
     processed = transformer.transform(raw_df).select_dtypes(include=[np.number])
+
+    # Align to the exact feature set and order the model was trained on.
+    # CalibratedClassifierCV → base LightGBM estimator exposes feature_name_().
+    try:
+        expected_features = list(model.feature_names_in_)
+    except AttributeError:
+        try:
+            expected_features = model.calibrated_classifiers_[0].estimator.booster_.feature_name()
+        except Exception:
+            expected_features = processed.columns.tolist()
+
+    missing = [f for f in expected_features if f not in processed.columns]
+    for col in missing:
+        processed[col] = np.nan
+    processed = processed[expected_features]
+
     feature_names = processed.columns.tolist()
     feature_arr = processed.values
 

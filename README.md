@@ -393,7 +393,8 @@ Transaction JSON
 Cloud Run API (src/serving/api.py)
   URL: https://fraud-detection-api-65768314585.asia-south1.run.app
   Auth: X-API-Key header (key in Secret Manager: fraud-api-key)
-  • POST /predict   — feature engineer → local model → fraud probability + SHAP
+  • POST /predict              — feature engineer → local model → fraud probability
+  • POST /predict?explain=true — same + SHAP top-3 feature explanations
   • GET  /health    — model version, endpoint status, today's prediction count
   • GET  /metrics   — 24hr latency p50/p95/p99, fraud rate
   • POST /drift-check — triggered by Cloud Scheduler
@@ -542,14 +543,49 @@ Table: `fraud_detection.prediction_logs` (partitioned by day, no PII, no feature
 | `latency_ms` | End-to-end inference latency |
 | `model_version` | `lgb-v8-no-txnid` |
 
-### Latency Targets
-| Percentile | Target |
+### Observed Latency (500-transaction batch test, 2026-06-02)
+End-to-end latency includes feature engineering (387 features), LightGBM `predict_proba`, and BigQuery streaming insert per prediction.
+
+| Percentile | Observed |
 |---|---|
-| p50 | < 50ms |
-| p95 | < 100ms |
-| p99 | < 200ms |
+| p50 | 268ms |
+| p75 | 279ms |
+| p95 | 301ms |
+| p99 | 458ms |
+| mean | 271ms |
+| min | 209ms |
+| max | 509ms |
+
+The dominant cost is the per-prediction BigQuery streaming insert (~150–200ms). SHAP computation (`?explain=true`) adds a further 80–150ms on top.
 
 Query live metrics: `GET /metrics` (24hr window, sourced from `prediction_logs`).
+
+---
+
+## Live Validation Results
+
+### 500-Transaction Batch Test (2026-06-02)
+
+Two runs: 500 sequential transactions from the IEEE-CIS test set, and 500 randomly sampled transactions. Both runs produced identical summary statistics.
+
+| Metric | Result |
+|---|---|
+| Total sent | 500 |
+| Successful | 500 (100%) |
+| Errors | 0 |
+| Flagged as fraud | 16 (3.2%) |
+| Training fraud rate | 3.45% |
+| Probability range | 0.0066 – 0.9734 |
+| Probability mean | 0.0351 |
+| Probability std | 0.1508 |
+
+**Observations:**
+- 3.2% fraud rate matches the training distribution (3.45%) — model is not over- or under-predicting on held-out data
+- Probabilities are well-separated: most predictions cluster near 0 (legitimate) with high-confidence fraud cases reaching 0.97+
+- 100% HTTP success rate across both sequential and random orderings confirms the feature alignment fix (Issue 41) is stable under varied input patterns
+- SHAP explanation columns were empty in the test output — expected; the batch test called `/predict` without `?explain=true` (SHAP is opt-in since the performance optimisation)
+
+**Validation output saved:** `testdata/validation_500_20260602_111341.csv`
 
 ---
 

@@ -232,7 +232,7 @@ steps:
       - '8080'
       - --set-env-vars
       - 'ENV=dev,GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_GCP_REGION},GCS_ARTIFACTS_BUCKET=${_ARTIFACTS_BUCKET},BQ_DATASET=fraud_detection,BQ_LOCATION=${_GCP_REGION},API_KEY_SECRET_NAME=fraud-api-key,SERVING_TRANSFORMER_GCS_URI=gs://${_ARTIFACTS_BUCKET}/transformers/feature_engineer.joblib,PREDICTION_LOG_BQ_TABLE=prediction_logs,DRIFT_LOG_BQ_TABLE=drift_logs,CLOUD_RUN_SERVICE_NAME=${_CLOUD_RUN_SERVICE},SERVING_CALIBRATED_THRESHOLD=0.2458,FEATURE_DRIFT_ALERT_POLICY=feature-drift-alert,PERFORMANCE_DRIFT_ALERT_POLICY=performance-drift-alert,ALERT_EMAIL=${_ALERT_EMAIL}'
-      - --no-allow-unauthenticated
+      - --allow-unauthenticated
       - --quiet
 
   # ─── 10. Smoke test — /predict + /health verification ───────────────────────

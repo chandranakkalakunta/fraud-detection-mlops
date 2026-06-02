@@ -362,3 +362,50 @@ All bugs, misconfigurations, and schema errors encountered and resolved during d
 **Cause:** The URL was already fetched dynamically via `gcloud run services describe ${_CLOUD_RUN_SERVICE}`. However, the step had no `set -euo pipefail`, so a failed URL lookup (e.g., wrong substitution value) would silently continue with an empty `SVC_URL` and produce a misleading `curl` error.  
 **Fix:** Added `set -euo pipefail` and hardcoded `fraud-detection-api` and `asia-south1` in the describe command (removing indirection through substitution variables in the smoke test itself — substitutions are appropriate for build/deploy steps but add fragility to verification steps).  
 **Commit:** `7c22772`
+
+---
+
+## 37. `gcloud builds submit` blocked by org resource location policy
+
+**When:** Manual `gcloud builds submit` during this session.  
+**Cause:** `gcloud builds submit` without `--region` defaults to creating a source-staging bucket in `us`. The project has an org policy (`constraints/gcp.resourceLocations`) that restricts all resource creation to `asia-south1`, blocking the staging bucket creation with `HTTPError 412`.  
+**Fix:** Added `--region=asia-south1` and `--gcs-source-staging-dir=gs://<artifacts-bucket>/cloud-build-staging` to direct source upload to an existing `asia-south1` bucket. This flag combo must be used for every manual build submission in this project.  
+**Commit:** `46fde0c`
+
+---
+
+## 38. `$SHORT_SHA` is empty in manual `gcloud builds submit`
+
+**When:** Manual build submission — image tag resolved to `fraud-detection:` (empty).  
+**Cause:** `$SHORT_SHA` is a Cloud Build built-in substitution populated only by GitHub-triggered builds. Manual `gcloud builds submit` does not set it, causing the image name to have an empty tag and Cloud Build to reject the build spec with `INVALID_ARGUMENT: could not parse reference`.  
+**Fix:** Pass `--substitutions=SHORT_SHA=$(git rev-parse --short HEAD)` on every manual submission. This is a manual-only concern; GitHub-triggered builds populate `$SHORT_SHA` automatically.  
+**Commit:** `46fde0c`
+
+---
+
+## 39. Cloud Build compute SA lacks `secretmanager.versions.access` — smoke test fails
+
+**When:** Cloud Build Step 10 smoke test — `gcloud secrets versions access latest --secret=fraud-api-key`.  
+**Cause:** The Cloud Build worker runs as the Compute Engine default SA (`PROJECT_NUMBER-compute@developer.gserviceaccount.com`). Although this SA is granted `roles/editor` automatically, `roles/editor` explicitly excludes `secretmanager.versions.access` — Secret Manager secret access must be granted separately. The custom `pipeline-sa` had been granted `secretmanager.secretAccessor` but Cloud Build was not running as `pipeline-sa`; it was running as the compute SA.  
+**Fix:** Granted `roles/secretmanager.secretAccessor` to the compute SA at project level. Added the binding to `scripts/01_gcp_setup.sh` with a comment explaining why `roles/editor` is insufficient.  
+**Lesson:** `roles/editor` does not include `secretmanager.versions.access`. Any workload (Cloud Build, Cloud Run jobs, GCE VMs) that needs to read secrets must receive `secretmanager.secretAccessor` explicitly, regardless of whether it already has `roles/editor`.  
+**Commit:** `1b98834`
+
+---
+
+## 40. Smoke test `gcloud auth print-identity-token` fails in Cloud Build environment
+
+**When:** Cloud Build Step 10 smoke test — `gcloud auth print-identity-token --audiences=...`.  
+**Cause:** The Cloud Build worker SA cannot generate OIDC identity tokens via `gcloud auth print-identity-token`. Additionally, `allUsers` had already been granted `roles/run.invoker` on the Cloud Run service (to allow external traffic), making identity token auth redundant — the service accepts unauthenticated requests at the Cloud Run IAM layer; app-level authentication is enforced by the `X-API-Key` header.  
+**Fix:** Removed identity token generation and `Authorization: Bearer` header from smoke test entirely. The step now fetches the API key from Secret Manager and passes it as `X-API-Key` only. This is simpler, more robust in CI, and correctly reflects the actual auth model (public endpoint + application-level API key).  
+**Commit:** `46fde0c`
+
+---
+
+## 41. Feature engineer outputs 404 columns but LightGBM expects 387 — `ValueError` in `/predict`
+
+**When:** First live `/predict` call after Cloud Run deployment.  
+**Cause:** `transformer.transform()` produces 404 numeric columns (the transformer was updated or fitted with additional engineered features), but the LightGBM model was trained on 387 features. `predict_proba(feature_arr)` raised `ValueError: X has 404 features, but LGBMClassifier is expecting 387 features`.  
+**Fix:** Added a column alignment step between transform and inference. Extracts the expected 387 feature names from the calibrated model via `model.calibrated_classifiers_[0].estimator.booster_.feature_name()` (with `model.feature_names_in_` as primary attempt). Reindexes the `processed` DataFrame to exactly those 387 columns in training order, filling any missing columns with `NaN` (safe for LightGBM). The same aligned DataFrame is passed to SHAP to keep feature labels consistent.  
+**Lesson:** Always explicitly align transformer output to model's expected feature list at serving time. The transformer and model can drift independently if retrained separately — the model's own feature name list is the authoritative source of truth.  
+**Commit:** `4e588e0`

@@ -1,10 +1,11 @@
 """
-Cloud Run REST API wrapping the Vertex AI Endpoint.
+Cloud Run REST API — fraud scoring.
 
 Endpoints:
-  POST /predict  — raw transaction JSON → fraud_probability + prediction + top-3 SHAP
+  POST /predict  — raw transaction JSON → fraud_probability + prediction (+ SHAP if explain=true)
   GET  /health   — model version, endpoint status, today's prediction count
   GET  /metrics  — last 24hr: total predictions, fraud rate, latency p50/p95/p99
+  POST /drift-check — triggered by Cloud Scheduler
 
 Auth: X-API-Key header validated against Secret Manager secret.
 Logging: structured JSON throughout, no PII logged.
@@ -15,13 +16,14 @@ import io
 import os
 import time
 import uuid as _uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request, Security
+from fastapi import FastAPI, HTTPException, Query, Request, Security
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
 
@@ -30,18 +32,17 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-app = FastAPI(
-    title="Fraud Detection API",
-    description="Online fraud scoring — lgb-v8-no-txnid, Platt-calibrated",
-    version="1.0.0",
-)
-
-# ── Module-level state (lazy-loaded on first request) ────────────────────────
+# ── Module-level state ────────────────────────────────────────────────────────
 _config: dict | None = None
 _transformer: Any = None
-_model: Any = None          # calibrated LGBMClassifier loaded from GCS
+_model: Any = None
 _shap_explainer: Any = None
 _api_key: str | None = None
+
+# Pooled GCP clients — initialised once at startup, reused across all requests.
+_bq_client: Any = None
+_sm_client: Any = None
+_gcs_client: Any = None
 
 _API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -49,24 +50,63 @@ _API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 def _get_config() -> dict:
     global _config
     if _config is None:
-        env = os.getenv("ENV", "dev")
-        _config = load_config(env)
+        _config = load_config(os.getenv("ENV", "dev"))
     return _config
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialise pooled GCP clients once at startup; reused for every request."""
+    global _bq_client, _sm_client, _gcs_client
+    try:
+        from google.cloud import bigquery, secretmanager
+        from google.cloud import storage as gcs
+
+        cfg = _get_config()
+        project = cfg["gcp"]["project_id"]
+        _bq_client = bigquery.Client(project=project)
+        _sm_client = secretmanager.SecretManagerServiceClient()
+        _gcs_client = gcs.Client(project=project)
+        logger.info("gcp_clients_initialized", extra={"project": project})
+    except Exception as exc:
+        # Local dev / unit tests without GCP credentials — clients stay None,
+        # handlers fall back to creating per-request clients.
+        logger.warning("gcp_clients_unavailable_at_startup", extra={"error": str(exc)})
+    yield
+    # Cloud Run sends SIGTERM on shutdown; no explicit close needed for these clients.
+
+
+app = FastAPI(
+    title="Fraud Detection API",
+    description="Online fraud scoring — lgb-v8-no-txnid, Platt-calibrated",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+def _get_bq_client(project: str) -> Any:
+    from google.cloud import bigquery
+    return _bq_client or bigquery.Client(project=project)
+
+
+def _get_sm_client() -> Any:
+    from google.cloud import secretmanager
+    return _sm_client or secretmanager.SecretManagerServiceClient()
+
+
+def _get_gcs_client(project: str) -> Any:
+    from google.cloud import storage as gcs
+    return _gcs_client or gcs.Client(project=project)
+
+
 def _get_api_key() -> str:
-    """Load API key from Secret Manager once and cache it."""
     global _api_key
     if _api_key is not None:
         return _api_key
-
-    from google.cloud import secretmanager
-
     cfg = _get_config()
     project = cfg["gcp"]["project_id"]
     secret_id = cfg["serving"]["api_key_secret"]
-
-    client = secretmanager.SecretManagerServiceClient()
+    client = _get_sm_client()
     name = f"projects/{project}/secrets/{secret_id}/versions/latest"
     response = client.access_secret_version(request={"name": name})
     _api_key = response.payload.data.decode("utf-8").strip()
@@ -78,16 +118,12 @@ def _load_transformer_from_gcs() -> Any:
     global _transformer
     if _transformer is not None:
         return _transformer
-
-    from google.cloud import storage as gcs
-
     cfg = _get_config()
     uri = cfg["serving"]["transformer_gcs_uri"]
     path = uri.removeprefix("gs://")
     bucket_name, blob_path = path.split("/", 1)
-
     buf = io.BytesIO()
-    gcs.Client(project=cfg["gcp"]["project_id"]).bucket(bucket_name).blob(blob_path).download_to_file(buf)
+    _get_gcs_client(cfg["gcp"]["project_id"]).bucket(bucket_name).blob(blob_path).download_to_file(buf)
     buf.seek(0)
     _transformer = joblib.load(buf)
     logger.info("transformer_loaded", extra={"uri": uri})
@@ -95,20 +131,15 @@ def _load_transformer_from_gcs() -> Any:
 
 
 def _load_model_from_gcs() -> Any:
-    """Load the calibrated model from GCS for local inference and SHAP."""
     global _model
     if _model is not None:
         return _model
-
-    from google.cloud import storage as gcs
-
     cfg = _get_config()
     bucket = cfg["storage"]["artifacts_bucket"]
     model_version = cfg["serving"]["model_version"]
     blob_path = f"models/{model_version}-calibrated/model.joblib"
-
     buf = io.BytesIO()
-    gcs.Client(project=cfg["gcp"]["project_id"]).bucket(bucket).blob(blob_path).download_to_file(buf)
+    _get_gcs_client(cfg["gcp"]["project_id"]).bucket(bucket).blob(blob_path).download_to_file(buf)
     buf.seek(0)
     _model = joblib.load(buf)
     logger.info("calibrated_model_loaded", extra={"blob": blob_path})
@@ -116,15 +147,11 @@ def _load_model_from_gcs() -> Any:
 
 
 def _get_shap_explainer() -> Any:
-    """Build SHAP TreeExplainer from base LightGBM estimator (cached)."""
     global _shap_explainer
     if _shap_explainer is not None:
         return _shap_explainer
-
     import shap
-
     calibrated = _load_model_from_gcs()
-    # CalibratedClassifierCV wraps the base estimator; extract it for TreeExplainer.
     base_estimator = calibrated.calibrated_classifiers_[0].estimator
     _shap_explainer = shap.TreeExplainer(base_estimator)
     logger.info("shap_explainer_ready")
@@ -132,11 +159,9 @@ def _get_shap_explainer() -> Any:
 
 
 def _validate_api_key(key: str | None) -> None:
-    """Raise HTTP 401/403 if key is missing or invalid."""
     if key is None:
         raise HTTPException(status_code=401, detail="X-API-Key header required")
-    expected = _get_api_key()
-    if key != expected:
+    if key != _get_api_key():
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
@@ -227,6 +252,7 @@ class MetricsResponse(BaseModel):
 async def predict(
     transaction: TransactionFeatures,
     request: Request,
+    explain: bool = Query(default=False, description="Return SHAP explanation for top 3 features"),
     api_key: str | None = Security(_API_KEY_HEADER),
 ) -> PredictResponse:
     _validate_api_key(api_key)
@@ -243,9 +269,7 @@ async def predict(
 
     raw_df = pd.DataFrame([raw_dict])
 
-    # Ensure all columns the transformer was fitted on are present (missing → NaN).
-    # This covers V1-V339, identity columns, and target-encoding columns not
-    # included in the minimal API request schema.
+    # Fill in any columns the transformer expects that weren't in the request.
     expected_cols = (
         list(getattr(transformer, "_v_cols_present", []))
         + list(getattr(transformer, "_passthrough_medians", pd.Series()).index)
@@ -257,8 +281,7 @@ async def predict(
 
     processed = transformer.transform(raw_df).select_dtypes(include=[np.number])
 
-    # Align to the exact feature set and order the model was trained on.
-    # CalibratedClassifierCV → base LightGBM estimator exposes feature_name_().
+    # Align to the exact 387 features and order the model was trained on.
     try:
         expected_features = list(model.feature_names_in_)
     except AttributeError:
@@ -267,53 +290,43 @@ async def predict(
         except Exception:
             expected_features = processed.columns.tolist()
 
-    missing = [f for f in expected_features if f not in processed.columns]
-    for col in missing:
+    for col in (f for f in expected_features if f not in processed.columns):
         processed[col] = np.nan
     processed = processed[expected_features]
 
-    feature_names = processed.columns.tolist()
     feature_arr = processed.values
-
-    # Fraud probability from calibrated model
     fraud_prob = float(model.predict_proba(feature_arr)[0][1])
     binary_pred = int(fraud_prob >= threshold)
 
-    # Per-prediction SHAP (top 3 features)
+    # SHAP explanation — only computed when the caller requests it (explain=true).
     shap_features: list[SHAPFeature] = []
-    try:
-        explainer = _get_shap_explainer()
-        import shap as shap_lib
-        shap_vals = explainer.shap_values(processed)
-        if isinstance(shap_vals, list):
-            sv = shap_vals[1][0]
-        else:
-            sv = shap_vals[0]
-        top3_idx = np.argsort(np.abs(sv))[::-1][:3]
-        for idx in top3_idx:
-            direction = "increases_fraud_risk" if sv[idx] > 0 else "decreases_fraud_risk"
-            shap_features.append(SHAPFeature(
-                feature=feature_names[idx],
-                shap_value=round(float(sv[idx]), 4),
-                direction=direction,
-            ))
-    except Exception as exc:
-        logger.warning("shap_per_prediction_failed", extra={"error": str(exc)})
+    if explain:
+        try:
+            explainer = _get_shap_explainer()
+            shap_vals = explainer.shap_values(processed)
+            sv = shap_vals[1][0] if isinstance(shap_vals, list) else shap_vals[0]
+            feature_names = processed.columns.tolist()
+            for idx in np.argsort(np.abs(sv))[::-1][:3]:
+                shap_features.append(SHAPFeature(
+                    feature=feature_names[idx],
+                    shap_value=round(float(sv[idx]), 4),
+                    direction="increases_fraud_risk" if sv[idx] > 0 else "decreases_fraud_risk",
+                ))
+        except Exception as exc:
+            logger.warning("shap_per_prediction_failed", extra={"error": str(exc)})
 
     latency_ms = (time.monotonic() - t0) * 1000
     request_id = request.headers.get("X-Request-ID") or str(_uuid.uuid4())
     prediction_id = str(_uuid.uuid4())
 
-    # Log metadata to BigQuery (no PII, no feature values)
+    # Log metadata to BigQuery (no PII, no feature values).
     try:
-        from google.cloud import bigquery
         project = cfg["gcp"]["project_id"]
         dataset = cfg["bigquery"]["dataset"]
         table = f"{project}.{dataset}.{cfg['serving']['prediction_log_table']}"
-        ts = datetime.now(timezone.utc).isoformat()
-        bigquery.Client(project=project).insert_rows_json(table, [{
+        _get_bq_client(project).insert_rows_json(table, [{
             "prediction_id": prediction_id,
-            "timestamp": ts,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "fraud_probability": round(fraud_prob, 6),
             "prediction": binary_pred,
             "threshold_used": round(threshold, 6),
@@ -331,6 +344,7 @@ async def predict(
             "fraud_probability": round(fraud_prob, 4),
             "prediction": binary_pred,
             "latency_ms": round(latency_ms, 2),
+            "explained": explain,
         },
     )
 
@@ -354,24 +368,20 @@ async def health(
     cfg = _get_config()
     model_version = str(cfg["serving"]["model_version"])
 
-    # Check endpoint reachability
     endpoint_status = "unknown"
     try:
         from src.serving.vertex_endpoint import _resolve_endpoint
-        ep = _resolve_endpoint(cfg)
-        endpoint_status = "reachable" if ep else "unreachable"
+        endpoint_status = "reachable" if _resolve_endpoint(cfg) else "unreachable"
     except Exception:
         endpoint_status = "unreachable"
 
-    # Today's prediction count from BQ
     predictions_today = 0
     try:
-        from google.cloud import bigquery
         project = cfg["gcp"]["project_id"]
         dataset = cfg["bigquery"]["dataset"]
         table = cfg["serving"]["prediction_log_table"]
         today = datetime.now(timezone.utc).date().isoformat()
-        result = bigquery.Client(project=project).query(
+        result = _get_bq_client(project).query(
             f"SELECT COUNT(*) AS cnt FROM `{project}.{dataset}.{table}` "
             f"WHERE DATE(timestamp) = '{today}'"
         ).result()
@@ -415,8 +425,6 @@ async def metrics(
     window_hours = 24
 
     try:
-        from google.cloud import bigquery
-
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
         query = f"""
             SELECT
@@ -429,9 +437,8 @@ async def metrics(
             FROM `{project}.{dataset}.{table}`
             WHERE timestamp >= '{cutoff}'
         """
-        rows = list(bigquery.Client(project=project).query(query).result())
+        rows = list(_get_bq_client(project).query(query).result())
         row = rows[0] if rows else None
-
         return MetricsResponse(
             window_hours=window_hours,
             total_predictions=int(row.total) if row and row.total else 0,

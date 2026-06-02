@@ -391,27 +391,32 @@ Transaction JSON
       │
       ▼
 Cloud Run API (src/serving/api.py)
-  • POST /predict   — feature engineer → Vertex AI Endpoint → fraud probability
+  URL: https://fraud-detection-api-65768314585.asia-south1.run.app
+  Auth: X-API-Key header (key in Secret Manager: fraud-api-key)
+  • POST /predict   — feature engineer → local model → fraud probability + SHAP
   • GET  /health    — model version, endpoint status, today's prediction count
   • GET  /metrics   — 24hr latency p50/p95/p99, fraud rate
   • POST /drift-check — triggered by Cloud Scheduler
       │
-      ├── FraudFeatureEngineer.transform()  (transformer loaded from GCS, cached)
+      ├── FraudFeatureEngineer.transform()
+      │     loaded from GCS at first request, cached in memory
+      │     output aligned to model's 387 expected features (column selection)
       │
-      ├── Vertex AI Endpoint (lgb-v8-no-txnid, autoscaling 1–3 replicas)
-      │     machine_type: n1-standard-4
-      │     target latency: p99 < 200ms
+      ├── CalibratedClassifierCV (lgb-v8-no-txnid-calibrated)
+      │     loaded from GCS at first request, cached in memory
+      │     threshold: 0.2458 (Platt-calibrated)
       │
-      ├── Platt calibration threshold: 0.2458
+      ├── Per-prediction SHAP (top 3 features, TreeExplainer on base LGB estimator)
       │
-      ├── Per-prediction SHAP (top 3 features, TreeExplainer on base LGB)
+      ├── BigQuery prediction_logs (metadata only — no PII, no feature values)
+      │     prediction_id, request_id, timestamp, fraud_probability,
+      │     prediction, threshold_used, latency_ms, model_version
       │
-      └── BigQuery prediction_logs (metadata only — no PII, no feature values)
-            prediction_id, timestamp, fraud_probability, prediction,
-            threshold_used, latency_ms, model_version
+      └── Cloud Logging (structured JSON, filterable by jsonPayload.request_id)
 ```
 
 **Cloud Run API** deployed with `serving-sa`, `min_instances=1`, `max_instances=5`, `memory=2Gi`.  
+**Vertex AI Endpoint** (`fraud-detection-endpoint`) remains live for batch/online scoring via the Vertex AI SDK — the Cloud Run API uses local inference (GCS-loaded model) for lower latency and simpler auth.  
 **Streamlit demo** deployed as a separate Cloud Run service with public access.
 
 ---
@@ -473,7 +478,23 @@ Cloud Build triggered on every push to `main`. 10-step pipeline:
 | 9 | Rolling deploy to Cloud Run (`fraud-detection-api`) | Yes |
 | 10 | Smoke test — POST `/predict` + GET `/health` | Yes |
 
-Service account: `pipeline-sa` (Cloud Build).  
+**Service accounts:**
+- Build steps run as `65768314585-compute@developer.gserviceaccount.com` (Cloud Build default) — requires explicit `secretmanager.secretAccessor` (not included in `roles/editor`)
+- Deploy step uses `pipeline-sa` for Cloud Run deployment with `--service-account=serving-sa`
+
+**Smoke test auth model:** Cloud Run service has `allUsers: roles/run.invoker` (public endpoint). Smoke test authenticates with `X-API-Key` only — no OIDC identity token required.
+
+**Manual build submission** (org policy blocks `us` region):
+```bash
+gcloud builds submit \
+  --config=cloudbuild.yaml \
+  --project=fraud-detection-mlops-497717 \
+  --region=asia-south1 \
+  --gcs-source-staging-dir=gs://fraud-detection-mlops-497717-fraud-artifacts/cloud-build-staging \
+  --substitutions=SHORT_SHA=$(git rev-parse --short HEAD)
+```
+Note: `$SHORT_SHA` is only set automatically in GitHub-triggered builds; must be passed explicitly for manual submissions.
+
 Configure GitHub trigger:
 ```bash
 gcloud builds triggers create github \
@@ -483,6 +504,52 @@ gcloud builds triggers create github \
   --build-config=cloudbuild.yaml \
   --service-account=projects/fraud-detection-mlops-497717/serviceAccounts/pipeline-sa@fraud-detection-mlops-497717.iam.gserviceaccount.com
 ```
+
+---
+
+## Observability (Phase 4)
+
+### Structured Logging — Cloud Logging
+All modules use `src/utils/logging.py` which routes to `CloudLoggingHandler` when `GOOGLE_CLOUD_PROJECT` is set, with fallback to JSON stdout locally.
+
+Every log record carries these labels (filterable in Logs Explorer):
+| Label | Source | Value |
+|---|---|---|
+| `component` | `LOG_COMPONENT` env | `fraud-detection-mlops` |
+| `service` | `SERVICE_NAME` env | `fraud-detection-api` |
+| `version` | `MODEL_VERSION` env | `lgb-v8-no-txnid` |
+| `environment` | `ENV` env | `dev` / `prod` |
+
+Every `/predict` call logs `request_id` (from `X-Request-ID` header or generated UUID) as a top-level `jsonPayload` field.
+
+**Logs Explorer filter for a specific request:**
+```
+resource.type="cloud_run_revision"
+resource.labels.service_name="fraud-detection-api"
+jsonPayload.request_id="<uuid>"
+```
+
+### Per-Prediction BigQuery Logging
+Table: `fraud_detection.prediction_logs` (partitioned by day, no PII, no feature values)
+
+| Column | Description |
+|---|---|
+| `prediction_id` | UUID per prediction |
+| `timestamp` | UTC ISO timestamp |
+| `fraud_probability` | Calibrated probability (6 d.p.) |
+| `prediction` | Binary decision (0/1) |
+| `threshold_used` | 0.2458 |
+| `latency_ms` | End-to-end inference latency |
+| `model_version` | `lgb-v8-no-txnid` |
+
+### Latency Targets
+| Percentile | Target |
+|---|---|
+| p50 | < 50ms |
+| p95 | < 100ms |
+| p99 | < 200ms |
+
+Query live metrics: `GET /metrics` (24hr window, sourced from `prediction_logs`).
 
 ---
 
@@ -564,7 +631,13 @@ ENV=dev python src/training/run_v8_pipeline.py
 make deploy-serving          # BQ tables, baseline, API key, Vertex endpoint
 
 # 7. Build and deploy Cloud Run API
-gcloud builds submit --config=cloudbuild.yaml
+# GitHub push to main triggers automatically. For manual submission:
+gcloud builds submit \
+  --config=cloudbuild.yaml \
+  --project=fraud-detection-mlops-497717 \
+  --region=asia-south1 \
+  --gcs-source-staging-dir=gs://${GCS_ARTIFACTS_BUCKET}/cloud-build-staging \
+  --substitutions=SHORT_SHA=$(git rev-parse --short HEAD)
 
 # 8. Set CLOUD_RUN_API_URL in .env, then:
 make setup-monitoring        # Cloud Scheduler, alert policies, Vertex monitoring

@@ -189,6 +189,11 @@ bind "${MON_EMAIL}" "roles/aiplatform.viewer"
 bind "${MON_EMAIL}" "roles/bigquery.dataViewer"
 bind "${MON_EMAIL}" "roles/bigquery.jobUser"
 
+# Cloud Build worker SA: needs Secret Manager access to fetch secrets in CI steps.
+# roles/editor (auto-granted) does NOT include secretmanager.versions.access — must be explicit.
+CLOUDBUILD_COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+bind "${CLOUDBUILD_COMPUTE_SA}" "roles/secretmanager.secretAccessor"
+
 log "IAM bindings applied."
 
 # ─── BigQuery Dataset with CMEK ──────────────────────────────────────────────

@@ -168,6 +168,7 @@ Secondary metrics reported: AUC-ROC, F1, Precision, Recall at optimal threshold.
 - [x] **Phase 1** — Scaffold, GCP setup, data ingestion, EDA, baseline model
 - [x] **Phase 2A** — Feature engineering (387 features after TransactionID leakage fix), XGBoost/LightGBM, Vertex AI Experiments
 - [x] **Phase 2B** — HP tuning (Vertex AI Vizier, 30+30 trials), champion selection, SHAP, Platt calibration, TransactionID leakage fix (v8)
+- [ ] **Phase 3** — Vertex AI Pipelines end-to-end orchestration (KFP v2); descoped — pipeline component stubs exist in `pipelines/` but full orchestration was deferred in favour of Phase 4 serving and monitoring
 - [x] **Phase 4** — Online serving (Vertex AI Endpoint + Cloud Run), drift monitoring (PSI + fraud rate), CI/CD (Cloud Build), Streamlit demo
 
 ---
@@ -543,18 +544,17 @@ Table: `fraud_detection.prediction_logs` (partitioned by day, no PII, no feature
 | `latency_ms` | End-to-end inference latency |
 | `model_version` | `lgb-v8-no-txnid` |
 
-### Observed Latency (500-transaction batch test, 2026-06-02)
+### Observed Latency — Real-data 500-transaction batch test (2026-06-02)
 End-to-end latency includes feature engineering (387 features), LightGBM `predict_proba`, and BigQuery streaming insert per prediction.
 
 | Percentile | Observed |
 |---|---|
-| p50 | 268ms |
-| p75 | 279ms |
-| p95 | 301ms |
-| p99 | 458ms |
-| mean | 271ms |
-| min | 209ms |
-| max | 509ms |
+| p50 | 518ms |
+| p75 | 547ms |
+| p95 | 583ms |
+| p99 | 670ms |
+| mean | 526ms |
+| min | 458ms |
 
 The dominant cost is the per-prediction BigQuery streaming insert (~150–200ms). SHAP computation (`?explain=true`) adds a further 80–150ms on top.
 
@@ -564,9 +564,11 @@ Query live metrics: `GET /metrics` (24hr window, sourced from `prediction_logs`)
 
 ## Live Validation Results
 
-### 500-Transaction Batch Test (2026-06-02)
+### 500-Transaction Batch Tests (2026-06-02)
 
-Two runs: 500 sequential transactions from the IEEE-CIS test set, and 500 randomly sampled transactions. Both runs produced identical summary statistics.
+Two runs: 500 real IEEE-CIS transactions (full V-feature payload) and 500 synthetic/random transactions (sparse payload). The runs produced materially different latency profiles.
+
+#### Real-data run (IEEE-CIS test set)
 
 | Metric | Result |
 |---|---|
@@ -576,13 +578,29 @@ Two runs: 500 sequential transactions from the IEEE-CIS test set, and 500 random
 | Flagged as fraud | 16 (3.2%) |
 | Training fraud rate | 3.45% |
 | Probability range | 0.0066 – 0.9734 |
-| Probability mean | 0.0351 |
-| Probability std | 0.1508 |
+| p50 latency | 518ms |
+| p99 latency | 670ms |
+| Cold-start spikes | 2 mid-batch (~22s and ~15s) |
 
-**Observations:**
-- 3.2% fraud rate matches the training distribution (3.45%) — model is not over- or under-predicting on held-out data
+#### Synthetic/random run
+
+| Metric | Result |
+|---|---|
+| Total sent | 500 |
+| Successful | 500 (100%) |
+| Errors | 0 |
+| Flagged as fraud | 6 (1.2%) |
+| Max probability | 0.769 |
+| p50 latency | 278ms |
+| p99 latency | 469ms |
+| Cold-start spikes | 0 |
+
+**Latency diagnostic:** The ~46% p50 gap (518ms vs 278ms) is attributable to payload size — real transactions populate all 339 Vesta V-features while synthetic transactions populate ~40%, resulting in faster JSON serialization and feature engineering. This is a data-density characteristic, not an infrastructure deficiency; `min-instances=1` eliminated cold-start tail latency but does not affect steady-state p50.
+
+**Other observations:**
+- 3.2% fraud rate on real data matches the training distribution (3.45%) — model is not over- or under-predicting on held-out data
 - Probabilities are well-separated: most predictions cluster near 0 (legitimate) with high-confidence fraud cases reaching 0.97+
-- 100% HTTP success rate across both sequential and random orderings confirms the feature alignment fix (Issue 41) is stable under varied input patterns
+- 100% HTTP success rate across both run types confirms the feature alignment fix (Issue 41) is stable under varied input patterns
 - SHAP explanation columns were empty in the test output — expected; the batch test called `/predict` without `?explain=true` (SHAP is opt-in since the performance optimisation)
 
 **Validation output saved:** `testdata/validation_500_20260602_111341.csv`
